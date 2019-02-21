@@ -1,0 +1,9 @@
+numpy
+pandas
+scikit-learn
+tqdm
+emoji
+saliency
+Pillow
+joblib
+matplotlib
