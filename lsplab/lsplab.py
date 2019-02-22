@@ -13,7 +13,7 @@ from tqdm import trange
 import emoji
 import saliency
 from PIL import Image
-from joblib import load, dump
+from joblib import load
 
 import datetime
 import math
@@ -309,8 +309,6 @@ class lsp(object):
                 image = tf.image.random_brightness(image, max_delta=0.5)
                 image = tf.image.random_contrast(image, lower=0.6, upper=1.4)
                 image = tf.map_fn(lambda x: tf.image.random_flip_left_right(x), image)
-                # QQ
-                #image = tf.map_fn(lambda x: tf.image.random_flip_up_down(x), image)
 
             if self.__do_crop:
                 image = tf.map_fn(lambda x: tf.random_crop(x, [resized_height, resized_width, 3]), image)
@@ -484,7 +482,6 @@ class lsp(object):
     def __parse_batch(self, batch_data):
         id = batch_data['id']
         treatment = batch_data['treatment']
-        #genotype = batch_data['genotype']
 
         image_data = []
 
@@ -492,7 +489,6 @@ class lsp(object):
             data = batch_data['image_data_{0}'.format(i)]
             image_data.append(data)
 
-        #return id, treatment, genotype, image_data
         return id, treatment, image_data
 
     def __learn_subspace_transform(self, targets, labels):
@@ -726,9 +722,6 @@ class lsp(object):
 
     def __geodesic_distance(self, series, t):
         '''Gets the geodesic distance for a series of points, can do n pairs in parallel where n is the number of gpus'''
-
-        # QQ
-        #return [np.linalg.norm(x) for x in np.array(embedding_As) - np.array(embedding_Bs)]
 
         series = np.array(series)
 
@@ -1138,8 +1131,6 @@ class lsp(object):
                                     self.__log('Testing decoder...')
                                     self.__test_decoder(decoder_test_vec, image_data_test[-1])
 
-                                self.__save_decoder()
-
                                 # Save the parameters of the decoder so we can load it later
 
                             # If we are done all the folds now
@@ -1168,16 +1159,7 @@ class lsp(object):
 
                                     self.__save_as_image(smoothgrad_mask_grayscale, os.path.join(self.results_path, 'saliency', 'saliency-fold{0}.png'.format(current_fold)))
 
-                            # QQ
-                            #Save network state and all embeddings for debugging
-                            self.save_state()
-
-                            dump(self.__all_projections, 'all_projections.pkl')
-
                         if (self.__current_fold + 1) == self.__num_folds:
-                            # Load the decoder back up
-                            self.__load_decoder()
-
                             # Compute all geodesics
                             geo_pheno = self.__get_geodesics_for_all_projections()
 
@@ -1242,7 +1224,7 @@ class lsp(object):
         self.__log('Run statistics:')
         self.__log('Total time elapsed: {0}'.format(self.__global_timer.elapsed()))
         self.__log('Total failed pretrain attempts: {0}'.format(self.__num_failed_attempts))
-        self.__log('Total population size ultimately used: {0} lines'.format(len(self.__all_projections[0])))
+        self.__log('Total population size ultimately used: {0}'.format(len(self.__all_projections[0])))
 
     def __pretrain(self, pretrain_op, loss_op, test_loss_op):
         self.__log('Starting embedding learning...')
