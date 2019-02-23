@@ -1132,6 +1132,8 @@ class lsp(object):
                                     self.__test_decoder(decoder_test_vec, image_data_test[-1])
 
                                 # Save the parameters of the decoder so we can load it later
+                                self.__save_decoder()
+
 
                             # If we are done all the folds now
                             if (self.__current_fold + 1) == self.__num_folds:
@@ -1160,6 +1162,9 @@ class lsp(object):
                                     self.__save_as_image(smoothgrad_mask_grayscale, os.path.join(self.results_path, 'saliency', 'saliency-fold{0}.png'.format(current_fold)))
 
                         if (self.__current_fold + 1) == self.__num_folds:
+                            # Load the decoder back up
+                            self.__load_decoder()
+
                             # Compute all geodesics
                             geo_pheno = self.__get_geodesics_for_all_projections()
 
