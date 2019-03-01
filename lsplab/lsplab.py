@@ -234,6 +234,15 @@ class lsp(object):
     def set_standardize_images(self, standardize):
         self.__standardize_images = standardize
 
+    def set_num_path_vertices(self, n):
+        self.__target_vertices = n
+
+    def set_num_decoder_iterations(self, n):
+        self.__decoder_iterations = n
+
+    def set_num_path_iterations(self, n):
+        self.__geodesic_path_iterations = n
+
     def __initialize_data(self, can_fold_file):
         # Input pipelines for training
         self.__input_batch_train, init_op_1, cache_file_path = \
@@ -779,9 +788,9 @@ class lsp(object):
         # Get final distance
         # QQ
         dists = self.__session.run(self.__geodesic_path_lengths, feed_dict=fd)
-        # dists, points = self.__session.run([self.__geodesic_path_lengths, self.__geodesic_intermediate_points], feed_dict=fd)
+        # dists, points = self.__session.run([self.__geodesic_path_lengths, self.__geodesic_anchor_points], feed_dict=fd)
         #
-        # for a, b, c in zip(embedding_As, [points[:10], points[10:]], embedding_Bs):
+        # for a, b, c in zip(starts, anchors, ends):
         #    combined = np.vstack([a, b, c])
         #
         #    # Plot path plot
