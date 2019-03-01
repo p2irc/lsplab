@@ -63,6 +63,7 @@ class lsp(object):
     __num_records_test = None
     __num_timepoints = None
     __cache_filename = None
+    __use_memory_cache = False
 
     # Graph machinery
     __session = None
@@ -136,13 +137,14 @@ class lsp(object):
         self.__graph = None
         self.__session = None
 
-        self.__log('Removing cache files...')
+        if self.__use_memory_cache is False:
+            self.__log('Removing cache files...')
 
-        for file in self.__cache_files:
-            for filename in glob.glob('/tmp/{0}*'.format(file)):
-                os.remove(filename)
+            for file in self.__cache_files:
+                for filename in glob.glob('/tmp/{0}*'.format(file)):
+                    os.remove(filename)
 
-        self.__cache_files = []
+            self.__cache_files = []
 
     def __reset_graph(self):
         # Reset all graph elements
@@ -243,6 +245,9 @@ class lsp(object):
     def set_num_path_iterations(self, n):
         self.__geodesic_path_iterations = n
 
+    def set_use_memory_cache(self, b):
+        self.__use_memory_cache = b
+
     def __initialize_data(self, can_fold_file):
         # Input pipelines for training
         self.__input_batch_train, init_op_1, cache_file_path = \
@@ -253,7 +258,8 @@ class lsp(object):
                                                         self.__num_timepoints,
                                                         queue_capacity=self.__major_queue_capacity,
                                                         num_threads=self.__num_threads,
-                                                        cached=True)
+                                                        cached=True,
+                                                        in_memory=self.__use_memory_cache)
 
         self.__cache_files.append(cache_file_path)
 
@@ -270,7 +276,8 @@ class lsp(object):
                                                         self.__num_timepoints,
                                                         queue_capacity=32,
                                                         num_threads=self.__num_threads,
-                                                        cached=False)
+                                                        cached=False,
+                                                        in_memory=self.__use_memory_cache)
 
         self.__inorder_input_batch_test, init_op_3, _ = \
             biotools.get_sample_from_tfrecords_inorder(self.__current_test_file,
@@ -280,7 +287,8 @@ class lsp(object):
                                                        self.__num_timepoints,
                                                        queue_capacity=32,
                                                        num_threads=self.__num_threads,
-                                                       cached=False)
+                                                       cached=False,
+                                                       in_memory=self.__use_memory_cache)
 
         self.__queue_init_ops = [init_op_1, init_op_2, init_op_3]
 
@@ -294,7 +302,8 @@ class lsp(object):
                                                            self.__num_timepoints,
                                                            queue_capacity=32,
                                                            num_threads=self.__num_threads,
-                                                           cached=False)
+                                                           cached=False,
+                                                           in_memory=self.__use_memory_cache)
 
             self.__queue_init_ops.append(can_init_op)
 
