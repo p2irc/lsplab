@@ -1193,6 +1193,12 @@ class lsp(object):
                         if current_attempt == self.__num_fold_restarts - 1:
                             self.__reporter.add('Pretraining fold %d did NOT converge' % self.__current_fold, False)
                             self.__log('Pretraining failed the maximum number of times.')
+
+                            if self.__current_fold == 0:
+                                self.__log('Could not embed the first fold, will terminate here.')
+                                self.__shutdown()
+                                exit()
+
                             break
                         else:
                             self.__log('Pretraining attempt did not succeed, will try again.')
