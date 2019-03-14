@@ -111,7 +111,7 @@ Nothing.
 
 `timestamp_format` - (`string`, optional) specifies in datetime format how to save the timestamps.
 
-### Returns
+#### Returns
 
 Nothing.
 
@@ -129,7 +129,7 @@ Nothing.
 
 `prefix` - (`string`, optional) Only include samples with filenames beginning with this string.
 
-### Returns
+#### Returns
 
 Number of timepoints inferred from metadata (`int`).
 
