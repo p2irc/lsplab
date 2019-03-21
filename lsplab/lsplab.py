@@ -47,7 +47,9 @@ class lsp(object):
 
     __main_lr = 0.001
     __global_weight_decay = 0.0001
-    __global_reg = 0.0005
+    # QQ
+    #__global_reg = 0.0005
+    __global_reg = 0.0
 
     __lstm_units = 8
 
@@ -956,6 +958,7 @@ class lsp(object):
 
                                 # Graph components for main objective
                                 embeddings = []
+                                emb_costs = []
 
                                 resized_height = int(self.__image_height * self.__crop_amount)
                                 resized_width = int(self.__image_width * self.__crop_amount)
@@ -965,7 +968,25 @@ class lsp(object):
                                     image = self.__apply_image_standardization(image)
                                     image = self.__apply_augmentations(image, resized_height, resized_width)
 
-                                    embeddings.append(self.feature_extractor.forward_pass(image))
+                                    emb = self.feature_extractor.forward_pass(image)
+                                    embeddings.append(emb)
+
+                                    # QQ
+                                    e_mean_x = tf.reduce_mean(emb, axis=0, keepdims=True)
+                                    mx = tf.matmul(tf.transpose(e_mean_x), e_mean_x)
+                                    vx = tf.matmul(tf.transpose(emb), emb) / tf.cast(tf.shape(emb)[0], tf.float32)
+                                    cov = vx - mx
+
+                                    D = tf.sqrt(tf.linalg.diag(cov))
+                                    Dinv = tf.linalg.inv(D)
+                                    corr = Dinv * cov * Dinv
+
+                                    #emb_cost = tf.linalg.det(cov) * 0.05
+                                    emb_cost = (1. - tf.reduce_mean(corr)) * 0.2
+
+                                    emb_costs.append(emb_cost)
+
+                                mean_emb_cost = tf.reduce_mean(emb_costs)
 
                                 predicted_treatment, _ = self.lstm.forward_pass(embeddings)
 
@@ -991,13 +1012,15 @@ class lsp(object):
 
                                 reconstruction_loss = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions)))
                                 #reconstruction_loss = tf.square(tf.norm(tf.subtract(original_images, reconstructions)))
+                                #reconstruction_loss = tf.reduce_mean(tf.abs(tf.subtract(original_images, reconstructions)))
                                 reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
 
                                 reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, reconstruction_vars)
 
                                 all_reconstruction_gradients.append(reconstruction_gradients)
 
-                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss])
+                                # QQ
+                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, mean_emb_cost])
                                 #pretrain_total_loss = treatment_loss
 
                                 pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
@@ -1069,6 +1092,7 @@ class lsp(object):
                         tf.summary.scalar('pretrain/treatment_loss', treatment_loss, collections=['pretrain_summaries'])
                         tf.summary.scalar('pretrain/cnn_reg_loss', cnn_reg_loss, collections=['pretrain_summaries'])
                         tf.summary.scalar('pretrain/lstm_reg_loss', lstm_reg_loss, collections=['pretrain_summaries'])
+                        tf.summary.scalar('pretrain/emb_cost', mean_emb_cost, collections=['pretrain_summaries'])
                         tf.summary.histogram('pretrain/predicted_treatment', predicted_treatment, collections=['pretrain_summaries'])
                         [tf.summary.histogram('gradients/%s-gradient' % g[1].name, g[0], collections=['pretrain_summaries']) for g in average_pretrain_gradients]
 
@@ -1090,6 +1114,10 @@ class lsp(object):
 
                     # Initialize network and threads
                     self.__initialize()
+
+                    # QQ
+                    #print(self.__session.run(emb_costs))
+                    #exit()
 
                     shortcut = False
 
