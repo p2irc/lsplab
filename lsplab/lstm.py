@@ -8,8 +8,7 @@ class lstm(object):
     def __init__(self, batch_size, num_units, graph):
         self.__model = tf.contrib.cudnn_rnn.CudnnCompatibleLSTMCell(num_units=num_units)
 
-        # QQ
-        regularization_coefficient = 0.0
+        regularization_coefficient = 0.005
 
         layer = layers.fullyConnectedLayer('lstm_output',
                                            [batch_size, num_units],
