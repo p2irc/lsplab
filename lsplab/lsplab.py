@@ -944,6 +944,7 @@ class lsp(object):
                         self.__decoder_net.send_ops_to_graph(self.__graph)
 
                     all_pretrain_gradients = []
+                    all_pretrain_gradients_no_det = []
                     all_reconstruction_gradients = []
 
                     for d in range(num_gpus):
@@ -1014,22 +1015,29 @@ class lsp(object):
 
                                 # QQ
                                 pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
-                                #pretrain_total_loss = treatment_loss
+                                pretrain_loss_no_det = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss])
+
 
                                 pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
 
                                 pretrain_gradients, _ = self.__get_clipped_gradients(pretrain_total_loss, pt_vars)
                                 all_pretrain_gradients.append(pretrain_gradients)
 
+                                pretrain_gradients_no_det, _ = self.__get_clipped_gradients(pretrain_loss_no_det, pt_vars)
+                                all_pretrain_gradients_no_det.append(pretrain_gradients_no_det)
+
                     # Average gradients and apply
                     if num_gpus == 1:
                         average_pretrain_gradients = all_pretrain_gradients[0]
+                        average_pretrain_gradients_no_det = all_pretrain_gradients_no_det[0]
                         average_reconstruction_gradients = all_reconstruction_gradients[0]
                     else:
                         average_pretrain_gradients = self.__average_gradients(all_pretrain_gradients)
+                        average_pretrain_gradients_no_det = self.__average_gradients(all_pretrain_gradients_no_det)
                         average_reconstruction_gradients = self.__average_gradients(all_reconstruction_gradients)
 
                     pretrain_objective = self.__apply_gradients(average_pretrain_gradients)
+                    pretrain_objective_no_det = self.__apply_gradients(average_pretrain_gradients_no_det)
 
                     reconstruction_objective = self.__apply_gradients(average_reconstruction_gradients)
 
@@ -1108,17 +1116,6 @@ class lsp(object):
                     # Initialize network and threads
                     self.__initialize()
 
-                    # QQ
-                    # for ff in range(3):
-                    #     a, b, c = self.__session.run([emb, cov, emb_cost])
-                    #     print('Emb:')
-                    #     print(a)
-                    #     print('Covariance mattty boi:')
-                    #     print(b)
-                    #     print('Embedding costs:')
-                    #     print(c)
-                    # exit()
-
                     shortcut = False
 
                     if shortcut:
@@ -1131,7 +1128,10 @@ class lsp(object):
 
                         self.load_state()
                     else:
-                        pretrain_succeeded = self.__pretrain(pretrain_objective, treatment_loss, treatment_loss_test)
+                        if self.__current_fold == 0:
+                            pretrain_succeeded = self.__pretrain(pretrain_objective, treatment_loss, treatment_loss_test)
+                        else:
+                            pretrain_succeeded = self.__pretrain(pretrain_objective_no_det, treatment_loss, treatment_loss_test)
 
                         self.__log('Pretraining finished.')
 
