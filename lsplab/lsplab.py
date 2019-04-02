@@ -47,9 +47,8 @@ class lsp(object):
 
     __main_lr = 0.001
     __global_weight_decay = 0.0001
-    # QQ
     __global_reg = 0.0005
-    #__global_reg = 0.0
+    __variance_constant = 0.1
 
     __lstm_units = 8
 
@@ -249,6 +248,9 @@ class lsp(object):
 
     def set_use_memory_cache(self, b):
         self.__use_memory_cache = b
+
+    def set_variance_constant(self, c):
+        self.__variance_constant = c
 
     def __initialize_data(self, can_fold_file):
         # Input pipelines for training
@@ -974,10 +976,10 @@ class lsp(object):
                                 all_emb = tf.concat(embeddings, 0)
                                 avg = tf.reduce_mean(all_emb, axis=0)
                                 emb_centered = all_emb - avg
-                                cov = tf.matmul(tf.transpose(emb_centered), emb_centered) / (self.__batch_size - 1.)
+                                cov = tf.matmul(tf.transpose(emb_centered), emb_centered) / (self.__batch_size * self.__num_timepoints)
 
                                 # Add a small epsilon to the diagonal to make sure it's invertible
-                                cov = tf.linalg.set_diag(cov, (tf.linalg.diag_part(cov) + 0.1))
+                                cov = tf.linalg.set_diag(cov, (tf.linalg.diag_part(cov) + self.__variance_constant))
 
                                 # Determinant of the covariance matrix
                                 emb_cost = tf.linalg.det(cov)
@@ -1016,7 +1018,6 @@ class lsp(object):
                                 # QQ
                                 pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
                                 pretrain_loss_no_det = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss])
-
 
                                 pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
 
