@@ -48,7 +48,7 @@ class lsp(object):
     __main_lr = 0.001
     __global_weight_decay = 0.0001
     __global_reg = 0.0005
-    __variance_constant = 0.1
+    __variance_constant = 0.2
 
     __lstm_units = 8
 
