@@ -52,9 +52,9 @@ class cnn(object):
 
     def __last_layer_outputs_volume(self):
         #return isinstance(self.__last_layer().output_size, (list,))
-        return len(self.__last_layer().output_size) > 2
+        return len(self.last_layer_output_size()) > 2
 
-    def __last_layer_output_size(self):
+    def last_layer_output_size(self):
         return copy.deepcopy(self.__last_layer().output_size)
 
     def first_layer(self):
@@ -95,7 +95,7 @@ class cnn(object):
         reshape = not self.__last_layer_outputs_volume()
 
         layer = layers.convLayer(layer_name,
-                                 self.__last_layer_output_size(),
+                                 self.last_layer_output_size(),
                                  filter_dimension,
                                  stride_length,
                                  activation_function,
@@ -118,7 +118,7 @@ class cnn(object):
         layer_name = self.__name_prefix + 'pool%d' % self.__num_layers_pool
         self.__log('Adding pooling layer %s...' % layer_name)
 
-        layer = layers.poolingLayer(self.__last_layer_output_size(), kernel_size, stride_length, pooling_type)
+        layer = layers.poolingLayer(self.last_layer_output_size(), kernel_size, stride_length, pooling_type)
 
         self.__log('Outputs: %s' % layer.output_size)
 
@@ -134,17 +134,17 @@ class cnn(object):
         layer_name = self.__name_prefix + 'drop%d' % self.__num_layers_dropout
         self.__log('Adding dropout layer %s...' % layer_name)
 
-        layer = layers.dropoutLayer(self.__last_layer_output_size(), p)
+        layer = layers.dropoutLayer(self.last_layer_output_size(), p)
 
         self.layers.append(layer)
 
-    def add_batch_norm_layer(self):
+    def add_batchnorm_layer(self):
         """Add a batch normalization layer to the model."""
         self.__num_layers_batchnorm += 1
         layer_name = self.__name_prefix + 'bn%d' % self.__num_layers_batchnorm
         self.__log('Adding batch norm layer %s...' % layer_name)
 
-        layer = layers.batchNormLayer(layer_name, self.__last_layer_output_size())
+        layer = layers.batchNormLayer(layer_name, self.last_layer_output_size())
 
         self.layers.append(layer)
 
@@ -164,7 +164,7 @@ class cnn(object):
         reshape = self.__last_layer_outputs_volume()
 
         layer = layers.fullyConnectedLayer(layer_name,
-                                           self.__last_layer_output_size(),
+                                           self.last_layer_output_size(),
                                            output_size,
                                            reshape,
                                            self.__batch_size,
@@ -191,7 +191,7 @@ class cnn(object):
         self.__log('Adding upsampling layer %s...' % layer_name)
 
         layer = layers.upsampleLayer(layer_name,
-                                     self.__last_layer_output_size(),
+                                     self.last_layer_output_size(),
                                      filter_size,
                                      num_filters,
                                      upscale_factor,
@@ -218,7 +218,7 @@ class cnn(object):
         self.__output_size = output_size
 
         layer = layers.fullyConnectedLayer('output',
-                                           self.__last_layer_output_size(),
+                                           self.last_layer_output_size(),
                                            num_out,
                                            reshape,
                                            self.__batch_size,
