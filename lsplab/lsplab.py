@@ -35,6 +35,7 @@ class lsp(object):
     __image_depth = 3
     __num_fold_restarts = 10
     __num_failed_attempts = 0
+    __mode = 'individual'
 
     __current_fold = None
     __num_folds = None
@@ -252,6 +253,13 @@ class lsp(object):
 
     def set_variance_constant(self, c):
         self.__variance_constant = c
+
+    def set_mode(self, mode):
+        if mode == 'individual' or mode == 'symmetric':
+            self.__mode = mode
+        else:
+            self.__log('Invalid mode set, must be individual or symmetric.')
+            exit()
 
     def __initialize_data(self, can_fold_file):
         # Input pipelines for training
@@ -664,8 +672,12 @@ class lsp(object):
         self.__geodesic_anchor_points = []
 
         # Calculate how many interpolated vertices we will need
-        self.__geodesic_num_interpolations = int((self.__target_vertices - self.__num_timepoints) / (self.__num_timepoints -1))
-        total_vertices = self.__num_timepoints + (self.__geodesic_num_interpolations * (self.__num_timepoints - 1))
+        if self.__mode == 'individual':
+            self.__geodesic_num_interpolations = int((self.__target_vertices - self.__num_timepoints) / (self.__num_timepoints -1))
+            total_vertices = self.__num_timepoints + (self.__geodesic_num_interpolations * (self.__num_timepoints - 1))
+        elif self.__mode == 'symmetric':
+            self.__geodesic_num_interpolations = self.__target_vertices - 2
+            total_vertices = self.__target_vertices
 
         # Assemble a graph
         for d in range(self.__num_gpus):
@@ -679,12 +691,12 @@ class lsp(object):
                     start_point = tf.placeholder(tf.float32, shape=(self.__n))
                     end_point = tf.placeholder(tf.float32, shape=(self.__n))
 
-                    anchor_points = [tf.placeholder(tf.float32, shape=(self.__n)) for i in range(self.__num_timepoints - 2)]
-
                     self.__geodesic_placeholder_A.append(start_point)
                     self.__geodesic_placeholder_B.append(end_point)
 
-                    self.__geodesic_anchor_points.append(anchor_points)
+                    if self.__mode == 'individual':
+                        anchor_points = [tf.placeholder(tf.float32, shape=(self.__n)) for i in range(self.__num_timepoints - 2)]
+                        self.__geodesic_anchor_points.append(anchor_points)
 
                     if self.__geodesic_num_interpolations > 0:
                         interpolated_points = [tf.Variable(tf.zeros([self.__n]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations * (self.__num_timepoints - 1))]
@@ -750,10 +762,17 @@ class lsp(object):
 
         starts = series[:, 0, :]
         ends = series[:, -1, :]
-        anchors = series[:, 1:-1, :]
 
         # Build the point placeholders for start and end points
         fd = {}
+
+        if self.__mode == 'individual':
+            anchors = series[:, 1:-1, :]
+
+            # Build the point placeholders for anchor points
+            for (x, y) in zip(self.__geodesic_anchor_points, anchors):
+                for a, b in zip(x, y):
+                    fd[a] = b
 
         for (x, y) in zip(self.__geodesic_placeholder_A, starts):
             fd[x] = y
@@ -761,16 +780,10 @@ class lsp(object):
         for (x, y) in zip(self.__geodesic_placeholder_B, ends):
             fd[x] = y
 
-        # Build the point placeholders for anchor points
-
-        for (x, y) in zip(self.__geodesic_anchor_points, anchors):
-            for a, b in zip(x, y):
-                fd[a] = b
-
         if self.__geodesic_num_interpolations > 0:
             self.__session.run(self.__geodesic_init_ops, feed_dict=fd)
 
-            # Assign the interpoalted points to a linear interpolation
+            # Assign the interpolated points to a linear interpolation
             def get_midpoints(point_A, point_B):
                 eps = (point_B - point_A) / self.__geodesic_num_interpolations
                 return [np.add(point_A, eps * x) for x in range(1, self.__geodesic_num_interpolations + 1)]
@@ -780,14 +793,19 @@ class lsp(object):
             for d in range(self.__num_gpus):
                 mps = []
 
-                mps.extend(get_midpoints(starts[d], anchors[d][0]))
+                if self.__mode == 'individual':
+                    mps.extend(get_midpoints(starts[d], anchors[d][0]))
 
-                for i in range(len(anchors[d]) - 1):
-                    mps.extend(get_midpoints(anchors[d][i], anchors[d][i + 1]))
+                    for i in range(len(anchors[d]) - 1):
+                        mps.extend(get_midpoints(anchors[d][i], anchors[d][i + 1]))
 
-                mps.extend(get_midpoints(anchors[d][-1], ends[d]))
+                    mps.extend(get_midpoints(anchors[d][-1], ends[d]))
 
-                midpoints.append(mps)
+                    midpoints.append(mps)
+                elif self.__mode == 'symmetric':
+                    mps.extend(get_midpoints(starts[d], ends[d]))
+
+                    midpoints.append(mps)
 
             for d in range(0, self.__num_gpus):
                 for j in range(0, len(midpoints[d])):
@@ -822,49 +840,106 @@ class lsp(object):
         return dists
 
     def __get_geodesics_for_all_projections(self):
-        '''Returns a dictionary containing treated-untreated geodesic distances for all accessions'''
-
         def get_sequence_at_index(idx, projections):
             return [p[idx][2] for p in projections]
 
         ret = []
-        num_rows = len(self.__all_projections[0])
-        all_idxs = range(num_rows)
 
-        self.__log('Calculating geodesic distances...')
+        if self.__mode == 'individual':
+            num_rows = len(self.__all_projections[0])
+            all_idxs = range(num_rows)
 
-        t = trange(0, num_rows, self.__num_gpus)
+            self.__log('Calculating geodesic distances...')
 
-        for i in t:
-            num_padding = 0
+            t = trange(0, num_rows, self.__num_gpus)
 
-            if i + self.__num_gpus > num_rows:
-                idxs = all_idxs[i:]
-                num_padding = len(all_idxs) % self.__num_gpus
-                idxs.extend(([all_idxs[0]] * num_padding))
-            else:
-                idxs = all_idxs[i:i+self.__num_gpus]
+            for i in t:
+                num_padding = 0
 
-            if idxs is None:
-                break
+                if i + self.__num_gpus > num_rows:
+                    idxs = all_idxs[i:]
+                    num_padding = len(all_idxs) % self.__num_gpus
+                    idxs.extend(([all_idxs[0]] * num_padding))
+                else:
+                    idxs = all_idxs[i:i+self.__num_gpus]
 
-            series = []
-            meta = []
+                if idxs is None:
+                    break
 
-            for idx in idxs:
-                series.append(get_sequence_at_index(idx, self.__all_projections))
-                meta.append(self.__all_projections[0][idx][:2])
+                series = []
+                meta = []
 
-            # These are dummies, we won't use the results
-            for j in range(num_padding):
-                series.append(get_sequence_at_index(0, self.__all_projections))
+                for idx in idxs:
+                    series.append(get_sequence_at_index(idx, self.__all_projections))
+                    meta.append(self.__all_projections[0][idx][:2])
 
-            # Do the evaluation
-            dists = self.__geodesic_distance(series, t)
+                # These are dummies, we won't use the results
+                for j in range(num_padding):
+                    series.append(get_sequence_at_index(0, self.__all_projections))
 
-            r = [[metadata[0], metadata[1], dist] for metadata, dist in zip(meta, dists)]
+                # Do the evaluation
+                dists = self.__geodesic_distance(series, t)
 
-            ret.extend(r)
+                r = [[metadata[0], metadata[1], dist] for metadata, dist in zip(meta, dists)]
+
+                ret.extend(r)
+        elif self.__mode == 'symmetric':
+            def get_projections_with_treatment(tr):
+                return [filter(lambda x: x[1] == tr, p) for p in self.__all_projections]
+
+            def get_idx_for_accid(accid, projections):
+                for p in range(len(projections)):
+                    if projections[0][p][0] == accid:
+                        return p
+
+                return None
+
+            treated_projections = get_projections_with_treatment(1)
+            untreated_projections = get_projections_with_treatment(0)
+
+            num_rows = len(treated_projections)
+            all_idxs = range(num_rows)
+
+            self.__log('Calculating geodesic distances...')
+
+            t = trange(0, num_rows, self.__num_gpus)
+
+            for i in t:
+                num_padding = 0
+
+                if i + self.__num_gpus > num_rows:
+                    idxs = all_idxs[i:]
+                    num_padding = len(all_idxs) % self.__num_gpus
+                    idxs.extend(([all_idxs[0]] * num_padding))
+                else:
+                    idxs = all_idxs[i:i + self.__num_gpus]
+
+                if idxs is None:
+                    break
+
+                series = []
+                meta = []
+
+                for idx in idxs:
+                    #treated_sequence = get_sequence_at_index(idx, treated_projections)
+                    accid = treated_projections[0][idx][0]
+                    treated_point = treated_projections[-1][idx][2]
+                    untreated_idx = get_idx_for_accid(accid, untreated_projections)
+                    untreated_point = untreated_projections[-1][untreated_idx][2]
+
+                    series.append([treated_point, untreated_point])
+                    meta.append(self.__all_projections[0][idx][:2])
+
+                # These are dummies, we won't use the results
+                for j in range(num_padding):
+                    series.append(series[-1])
+
+                # Do the evaluation
+                dists = self.__geodesic_distance(series, t)
+
+                r = [[metadata[0], metadata[1], dist] for metadata, dist in zip(meta, dists)]
+
+                ret.extend(r)
 
         return ret
 
