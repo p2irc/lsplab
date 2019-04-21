@@ -698,9 +698,12 @@ class lsp(object):
                         anchor_points = [tf.placeholder(tf.float32, shape=(self.__n)) for i in range(self.__num_timepoints - 2)]
                         self.__geodesic_anchor_points.append(anchor_points)
 
-                    if self.__geodesic_num_interpolations > 0:
-                        interpolated_points = [tf.Variable(tf.zeros([self.__n]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations * (self.__num_timepoints - 1))]
-                        self.__geodesic_interpolated_points.append(interpolated_points)
+                        if self.__geodesic_num_interpolations > 0:
+                            interpolated_points = [tf.Variable(tf.zeros([self.__n]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations * (self.__num_timepoints - 1))]
+                    elif self.__mode == 'symmetric':
+                        interpolated_points = [tf.Variable(tf.zeros([self.__n]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations)]
+
+                    self.__geodesic_interpolated_points.append(interpolated_points)
 
                     # Build the list of distances (losses) between points
                     previous_node = [start_point]
@@ -897,7 +900,10 @@ class lsp(object):
             treated_projections = get_projections_with_treatment(1)
             untreated_projections = get_projections_with_treatment(0)
 
-            num_rows = len(treated_projections)
+            # Remove all treated with no corresponding untreated
+            treated_projections = [filter(lambda x: get_idx_for_accid(x[0], untreated_projections) is not None, p) for p in treated_projections]
+
+            num_rows = len(treated_projections[0])
             all_idxs = range(num_rows)
 
             self.__log('Calculating geodesic distances...')
@@ -925,6 +931,7 @@ class lsp(object):
                     accid = treated_projections[0][idx][0]
                     treated_point = treated_projections[-1][idx][2]
                     untreated_idx = get_idx_for_accid(accid, untreated_projections)
+
                     untreated_point = untreated_projections[-1][untreated_idx][2]
 
                     series.append([treated_point, untreated_point])
