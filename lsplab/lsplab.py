@@ -891,7 +891,7 @@ class lsp(object):
                 return [filter(lambda x: x[1] == tr, p) for p in self.__all_projections]
 
             def get_idx_for_accid(accid, projections):
-                for p in range(len(projections)):
+                for p in range(len(projections[0])):
                     if projections[0][p][0] == accid:
                         return p
 
@@ -927,7 +927,6 @@ class lsp(object):
                 meta = []
 
                 for idx in idxs:
-                    #treated_sequence = get_sequence_at_index(idx, treated_projections)
                     accid = treated_projections[0][idx][0]
                     treated_point = treated_projections[-1][idx][2]
                     untreated_idx = get_idx_for_accid(accid, untreated_projections)
@@ -935,7 +934,7 @@ class lsp(object):
                     untreated_point = untreated_projections[-1][untreated_idx][2]
 
                     series.append([treated_point, untreated_point])
-                    meta.append(self.__all_projections[0][idx][:2])
+                    meta.append(treated_projections[0][idx][:2])
 
                 # These are dummies, we won't use the results
                 for j in range(num_padding):
@@ -1074,6 +1073,8 @@ class lsp(object):
                                 # Create augmented, unstandardized images for reconstruction targets
                                 for image in image_data:
                                     image = self.__apply_augmentations(image, resized_height, resized_width)
+                                    # QQ
+                                    #image = self.__apply_image_standardization(image)
 
                                     augmented_images.append(image)
 
