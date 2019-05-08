@@ -124,7 +124,9 @@ These are advanced settings you can change before calling `model.start` if you w
 
 `model.set_loss_function(['sce', 'mse'])` - sets the loss function used for embedding learning to either sigmoid cross-entropy (`sce`, default) or mean squared error (`mse`).
 
-`model.set_n(8)` - sets the dimensionality of the latent space (default is 16). Higher values are more likely to converge and decode properly, lower values are less likely to overfit.
+`model.set_n(int)` - sets the dimensionality of the latent space (default is `16`). The default should usually be sufficient.
+
+`model.set_variance_constant(int)` - sets the value lambda<sub>v</sub> described in the paper the paper (default is `0.2`).
 
 `model.set_transformation_method(['Linear', 'NeuralNet'])` - use either a linear regression method (`Linear`, default) or a 2-layer neural network (`NeuralNet`) for subspace transformations. Linear methods are less likely to overfit but may lose imprtant non-linearity in the data manifold.
 
