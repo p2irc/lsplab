@@ -216,13 +216,14 @@ class lsp(object):
         if m == 'NeuralNet':
             self.__trans_score_threshold = 20.0
 
-    def load_records(self, records_path, image_height, image_width, num_timepoints):
+    def load_records(self, records_path, image_height, image_width, num_timepoints, image_depth=3):
         """Load records created from the dataset"""
         self.__record_files = [os.path.join(records_path, f) for f in os.listdir(records_path) if
                         os.path.isfile(os.path.join(records_path, f)) and not f.endswith('.csv')]
 
         self.__image_height = image_height
         self.__image_width = image_width
+        self.__image_depth = image_depth
         self.__num_timepoints = num_timepoints
 
     def set_n(self, new_n):
@@ -334,7 +335,7 @@ class lsp(object):
                 image = tf.map_fn(lambda x: tf.image.random_flip_left_right(x), image)
 
             if self.__do_crop:
-                image = tf.map_fn(lambda x: tf.random_crop(x, [resized_height, resized_width, 3]), image)
+                image = tf.map_fn(lambda x: tf.random_crop(x, [resized_height, resized_width, self.__image_depth]), image)
 
         return image
 
@@ -550,7 +551,7 @@ class lsp(object):
         # Define the structure of the CNN used for feature extraction
         self.feature_extractor.add_input_layer()
 
-        self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 3, 16], stride_length=1, activation_function='relu')
+        self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, self.__image_depth, 16], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 16, 32], stride_length=1, activation_function='relu')
@@ -603,7 +604,7 @@ class lsp(object):
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 16, 16], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=16, upscale_factor=2, activation_function='relu')
 
-        self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, 3], stride_length=1, activation_function='relu')
+        self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function='relu')
 
     def __find_canonical_transformation(self):
         """Find a linear transformation between the test points projected in

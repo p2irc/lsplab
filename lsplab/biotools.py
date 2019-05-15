@@ -182,7 +182,7 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
 
         # add all images to the feature list
         for j, image_path in enumerate(all_record_images):
-            image_data = np.array(Image.open(image_path))
+            image_data = np.array(Image.open(image_path), dtype=np.uint8)
             image_raw = image_data.tostring()
             feature_dict['image_data_{0}'.format(j)] = tf.train.Feature(bytes_list=_byte_feature(image_raw))
 
@@ -212,7 +212,7 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
     print "Done"
 
 
-def read_tfrecords_dataset(filename, image_height, image_width, num_timepoints, num_threads, cached=True, in_memory=False):
+def read_tfrecords_dataset(filename, image_height, image_width, num_timepoints, num_threads, cached=True, in_memory=False, image_depth=3):
     def parse_fn(example):
         features_dict = {
             'id': tf.FixedLenFeature((), tf.int64),
@@ -234,7 +234,7 @@ def read_tfrecords_dataset(filename, image_height, image_width, num_timepoints, 
         for i in range(num_timepoints):
             image_name = 'image_data_{0}'.format(i)
             image = tf.decode_raw(tf.sparse_tensor_to_dense(outputs[image_name], default_value=''), tf.uint8)
-            image = tf.reshape(image, [image_height, image_width, 3])
+            image = tf.reshape(image, [image_height, image_width, image_depth])
             image = tf.image.convert_image_dtype(image, dtype=tf.float32)
 
             ret[image_name] = image
