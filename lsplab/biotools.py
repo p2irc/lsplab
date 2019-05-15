@@ -212,7 +212,7 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
     print "Done"
 
 
-def read_tfrecords_dataset(filename, image_height, image_width, num_timepoints, num_threads, cached=True, in_memory=False, image_depth=3):
+def read_tfrecords_dataset(filename, image_height, image_width, image_depth, num_timepoints, num_threads, cached=True, in_memory=False):
     def parse_fn(example):
         features_dict = {
             'id': tf.FixedLenFeature((), tf.int64),
@@ -256,10 +256,10 @@ def read_tfrecords_dataset(filename, image_height, image_width, num_timepoints, 
     return dataset, None
 
 
-def get_sample_from_tfrecords_shuffled(filename, batch_size, image_height, image_width, num_timepoints, queue_capacity, num_threads, cached=True, in_memory=False):
+def get_sample_from_tfrecords_shuffled(filename, batch_size, image_height, image_width, image_depth, num_timepoints, queue_capacity, num_threads, cached=True, in_memory=False):
     """Returns a batch from the specified .tfrecords file"""
 
-    dataset, cache_file_path = read_tfrecords_dataset(filename, image_height, image_width, num_timepoints, num_threads, cached, in_memory)
+    dataset, cache_file_path = read_tfrecords_dataset(filename, image_height, image_width, image_depth, num_timepoints, num_threads, cached, in_memory)
 
     dataset_shuf = dataset.apply(tf.contrib.data.shuffle_and_repeat(queue_capacity)).batch(batch_size=batch_size).prefetch(buffer_size=batch_size)
 
@@ -271,10 +271,10 @@ def get_sample_from_tfrecords_shuffled(filename, batch_size, image_height, image
     return next_element_shuf, init_op_shuf, cache_file_path
 
 
-def get_sample_from_tfrecords_inorder(filename, batch_size, image_height, image_width, num_timepoints, queue_capacity, num_threads, cached=True, in_memory=False):
+def get_sample_from_tfrecords_inorder(filename, batch_size, image_height, image_width, image_depth, num_timepoints, queue_capacity, num_threads, cached=True, in_memory=False):
     """Returns a batch from the specified .tfrecords file"""
 
-    dataset, cache_file_path = read_tfrecords_dataset(filename, image_height, image_width, num_timepoints, num_threads, cached, in_memory)
+    dataset, cache_file_path = read_tfrecords_dataset(filename, image_height, image_width, image_depth, num_timepoints, num_threads, cached, in_memory)
 
     dataset_inorder = dataset.repeat().batch(batch_size=batch_size).prefetch(buffer_size=batch_size)
 
