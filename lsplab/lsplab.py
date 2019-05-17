@@ -14,6 +14,7 @@ import emoji
 import saliency
 from PIL import Image
 from joblib import load
+import matplotlib.pyplot as plt
 
 import datetime
 import math
@@ -210,8 +211,6 @@ class lsp(object):
             saver.restore(self.__session, tf.train.latest_checkpoint(directory))
 
     def __save_as_image(self, mat, path):
-        import matplotlib.pyplot as plt
-
         plt.imshow(mat)
         plt.savefig(path)
 
@@ -1253,7 +1252,19 @@ class lsp(object):
                             df.columns = ['genotype', 'treatment', 'geodesic']
                             df.to_csv(os.path.join(self.results_path, name + '-geo.csv'), sep=' ', index=False)
 
-                            self.__log('.pheno file saved..')
+                            self.__log('.pheno file saved.')
+
+                            # Write a plot of output values
+                            self.__log('Writing trait value plot...')
+
+                            bins = np.linspace(np.amax(df['geodesic'].tolist()), np.amin(df['geodesic'].tolist()), 100)
+                            treated = df.loc[df['treatment'] == 1, 'geodesic'].tolist()
+                            untreated = df.loc[df['treatment'] == 0, 'geodesic'].tolist()
+
+                            plt.hist(treated, bins, alpha=0.5, label='treated')
+                            plt.hist(untreated, bins, alpha=0.5, label='control')
+                            plt.legend(loc='upper right')
+                            plt.savefig(os.path.join(self.results_path, 'trait-histogram.png'))
 
                         self.__shutdown()
                         break
