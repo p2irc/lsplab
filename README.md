@@ -122,6 +122,8 @@ There are currently three methods available for loading your data. These will cr
 
 These are advanced settings you can change before calling `model.start` if you want. However, the defaults are usually okay for most datasets.
 
+`model.set_random_seed(int)` - sets the random seed for improved reproducibility. Without this set, weight initialization will be different on each run. However, this does not provide perfect reproducability, since mini-batching is non-deterministic.
+
 `model.set_loss_function(['sce', 'mse'])` - sets the loss function used for embedding learning to either sigmoid cross-entropy (`sce`, default) or mean squared error (`mse`).
 
 `model.set_n(int)` - sets the dimensionality of the latent space (default is `16`). The default should usually be sufficient.

@@ -35,6 +35,7 @@ class lsp(object):
     __image_depth = 3
     __num_fold_restarts = 10
     __num_failed_attempts = 0
+    __random_seed = None
 
     __current_fold = None
     __num_folds = None
@@ -128,6 +129,10 @@ class lsp(object):
 
     def __initialize(self):
         self.__log('Initializing variables...')
+
+        if self.__random_seed is not None:
+            tf.set_random_seed(self.__random_seed)
+
         self.__session.run(tf.global_variables_initializer())
         self.__session.run(tf.local_variables_initializer())
         self.__session.run(self.__queue_init_ops)
@@ -152,6 +157,9 @@ class lsp(object):
         # Reset all graph elements
         self.__graph = tf.Graph()
         self.__session = tf.Session(graph=self.__graph)
+
+    def set_random_seed(self, seed):
+        self.__random_seed = seed
 
     def save_state(self, directory=None):
         """Save all trainable variables as a checkpoint in the current working path"""
