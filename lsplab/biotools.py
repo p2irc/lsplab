@@ -369,7 +369,7 @@ def csv2ped(input_filename, output_file):
     df_map_out.to_csv(output_file+'.map', sep=output_delimiter, header=None, index=False, float_format='%.0f')
 
 
-def snapshot2bgwas(input_filename, output_filename, barcode_regex='^([A-Za-z]+)+(\d+)(AA|AB)\d+$', timestamp_format='%Y-%m-%d %H:%M:%S.%f', prefix='VIS', not_before=None):
+def snapshot2bgwas(input_filename, output_filename, barcode_regex='^([A-Za-z]+)+(\d+)(AA|AB)\d+$', timestamp_format='%Y-%m-%d %H:%M:%S.%f', prefix='VIS', not_before=None, only_last=False):
     """Converts a Lemnatec SnapshotInfo.csv file into a .bgwas file."""
     df_out = pd.DataFrame()
     uid = 0
@@ -392,7 +392,15 @@ def snapshot2bgwas(input_filename, output_filename, barcode_regex='^([A-Za-z]+)+
             print('Entry is before not_before cutoff, continuing...')
             continue
 
-        for image in image_filenames.split(';'):
+        if only_last:
+            all_images = [image_filenames.split(';')[-1]]
+
+            if all_images[0] == '':
+                all_images = [image_filenames.split(';')[-2]]
+        else:
+            all_images = image_filenames.split(';')
+
+        for image in all_images:
             if image and image.startswith(prefix):
                 image = image + '.png'
                 print('Processing entry for image %s...' % image)

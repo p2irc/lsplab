@@ -308,6 +308,7 @@ class lsp(object):
                                                            self.__batch_size,
                                                            self.__image_height,
                                                            self.__image_width,
+                                                           self.__image_depth,
                                                            self.__num_timepoints,
                                                            queue_capacity=32,
                                                            num_threads=self.__num_threads,
