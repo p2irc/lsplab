@@ -130,12 +130,13 @@ class lsp(object):
     def __initialize(self):
         self.__log('Initializing variables...')
 
-        if self.__random_seed is not None:
-            tf.set_random_seed(self.__random_seed)
+        with self.__graph.as_default():
+            if self.__random_seed is not None:
+                tf.set_random_seed(self.__random_seed)
 
-        self.__session.run(tf.global_variables_initializer())
-        self.__session.run(tf.local_variables_initializer())
-        self.__session.run(self.__queue_init_ops)
+            self.__session.run(tf.global_variables_initializer())
+            self.__session.run(tf.local_variables_initializer())
+            self.__session.run(self.__queue_init_ops)
 
     def __shutdown(self):
         self.__log('Shutting down...')
