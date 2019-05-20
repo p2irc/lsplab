@@ -51,8 +51,8 @@ class lsp(object):
     __global_weight_decay = 0.0001
     __global_reg = 0.0005
     __variance_constant = 0.2
-
-    __lstm_units = 8
+    # QQ
+    __lstm_units = 128
 
     __pretrain_convergence_thresh_upper = 0.5
 
@@ -211,6 +211,7 @@ class lsp(object):
             saver.restore(self.__session, tf.train.latest_checkpoint(directory))
 
     def __save_as_image(self, mat, path):
+        plt.clf()
         plt.imshow(mat)
         plt.savefig(path)
 
@@ -572,6 +573,9 @@ class lsp(object):
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
 
+        self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
+        self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=2)
+        # QQ
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=2)
 
@@ -1002,9 +1006,9 @@ class lsp(object):
 
                                 augmented_images = []
 
-                                # Create augmented, unstandardized images for reconstruction targets
+                                # Create unaugmented, unstandardized images for reconstruction targets
                                 for image in image_data:
-                                    image = self.__apply_augmentations(image, resized_height, resized_width)
+                                    #image = self.__apply_augmentations(image, resized_height, resized_width)
 
                                     augmented_images.append(image)
 
@@ -1257,10 +1261,11 @@ class lsp(object):
                             # Write a plot of output values
                             self.__log('Writing trait value plot...')
 
-                            bins = np.linspace(np.amax(df['geodesic'].tolist()), np.amin(df['geodesic'].tolist()), 100)
+                            bins = np.linspace(np.amin(df['geodesic'].tolist()), np.amax(df['geodesic'].tolist()), 100)
                             treated = df.loc[df['treatment'] == 1, 'geodesic'].tolist()
                             untreated = df.loc[df['treatment'] == 0, 'geodesic'].tolist()
 
+                            plt.clf()
                             plt.hist(treated, bins, alpha=0.5, label='treated')
                             plt.hist(untreated, bins, alpha=0.5, label='control')
                             plt.legend(loc='upper right')

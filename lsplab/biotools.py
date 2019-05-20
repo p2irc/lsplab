@@ -15,9 +15,6 @@ num_encodings = 3
 queue_capacity = 100
 min_queue_size = 16
 angle_regex = '^VIS_SV_(\d+)_'
-# Assuming AA = unstressed, AB = stressed
-treatments = {'AA': '0', 'AB': '1'}
-
 
 def __index_to_label__(index, gen_trans, chr_pos):
     chromosome = int(gen_trans.loci[index].name[chr_pos])
@@ -369,7 +366,7 @@ def csv2ped(input_filename, output_file):
     df_map_out.to_csv(output_file+'.map', sep=output_delimiter, header=None, index=False, float_format='%.0f')
 
 
-def snapshot2bgwas(input_filename, output_filename, barcode_regex='^([A-Za-z]+)+(\d+)(AA|AB)\d+$', timestamp_format='%Y-%m-%d %H:%M:%S.%f', prefix='VIS', not_before=None, only_last=False):
+def snapshot2bgwas(input_filename, output_filename, barcode_regex='^([A-Za-z]+)+(\d+)(AA|AB)\d+$', timestamp_format='%Y-%m-%d %H:%M:%S.%f', prefix='VIS', not_before=None, only_last=False, treatments={'AA': '0', 'AB': '1'}):
     """Converts a Lemnatec SnapshotInfo.csv file into a .bgwas file."""
     df_out = pd.DataFrame()
     uid = 0
