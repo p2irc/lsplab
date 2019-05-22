@@ -575,9 +575,6 @@ class lsp(object):
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=2)
-        # QQ
-        self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
-        self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=2)
 
         self.feature_extractor.add_fully_connected_layer(output_size=64, activation_function='relu', regularization_coefficient=self.__global_reg)
 
@@ -991,6 +988,18 @@ class lsp(object):
                                     emb = self.feature_extractor.forward_pass(image)
                                     embeddings.append(emb)
 
+                                unaugmented_embeddings = []
+                                recon_images = []
+
+                                for image in image_data:
+                                    image = self.__apply_image_standardization(image)
+
+                                    if self.__do_crop:
+                                        image = self.__resize_image(image)
+
+                                    unaugmented_embeddings.append(self.feature_extractor.forward_pass(image))
+                                    recon_images.append(image)
+
                                 all_emb = tf.concat(embeddings, 0)
                                 avg = tf.reduce_mean(all_emb, axis=0)
                                 emb_centered = all_emb - avg
@@ -1004,25 +1013,17 @@ class lsp(object):
 
                                 predicted_treatment, _ = self.lstm.forward_pass(embeddings)
 
-                                augmented_images = []
-
-                                # Create unaugmented, unstandardized images for reconstruction targets
-                                for image in image_data:
-                                    #image = self.__apply_augmentations(image, resized_height, resized_width)
-
-                                    augmented_images.append(image)
-
                                 treatment_loss = self.__get_treatment_loss(treatment, predicted_treatment)
 
                                 cnn_reg_loss = self.feature_extractor.get_regularization_loss()
                                 lstm_reg_loss = self.lstm.get_regularization_loss()
 
                                 # Decoder takes the output from the latent space encoder and tries to reconstruct the input
-                                reconstructions = tf.concat([self.__decoder_net.forward_pass(emb) for emb in embeddings], axis=0)
+                                reconstructions = tf.concat([self.__decoder_net.forward_pass(emb) for emb in unaugmented_embeddings], axis=0)
 
                                 decoder_out = self.__decoder_net.layers[-1].output_size
 
-                                original_images = tf.image.resize_images(tf.concat(augmented_images, axis=0), [decoder_out[1], decoder_out[2]])
+                                original_images = tf.image.resize_images(tf.concat(recon_images, axis=0), [decoder_out[1], decoder_out[2]])
 
                                 # A measure of how diverse the reconstructions are
                                 _, rec_var = tf.nn.moments(reconstructions, axes=[0])
@@ -1031,9 +1032,6 @@ class lsp(object):
                                 reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions)), axis=[1, 2, 3])
                                 reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
 
-                                #reconstruction_loss = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions)))
-                                #reconstruction_loss = tf.square(tf.norm(tf.subtract(original_images, reconstructions)))
-                                #reconstruction_loss = tf.reduce_mean(tf.abs(tf.subtract(original_images, reconstructions)))
                                 reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
 
                                 reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, reconstruction_vars)
@@ -1128,10 +1126,6 @@ class lsp(object):
                         tf.summary.scalar('decoder/reconstruction_loss_batch_mean', reconstruction_loss, collections=['decoder_summaries'])
                         tf.summary.scalar('decoder/reconstruction_loss_batch_var', reconstruction_var, collections=['decoder_summaries'])
                         tf.summary.scalar('decoder/reconstruction_diversity', reconstruction_diversity, collections=['decoder_summaries'])
-
-                        recon_shape = self.__decoder_net.last_layer_output_size()
-                        reconstruction_vis = tf.Variable(tf.zeros(recon_shape), expected_shape=recon_shape, trainable=False, dtype=tf.float32)
-                        tf.assign(reconstruction_vis, reconstructions)
 
                         tf.summary.image('decoder/reconstructions', reconstructions, collections=['decoder_summaries'])
 

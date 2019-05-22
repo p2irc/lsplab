@@ -115,7 +115,7 @@ class fullyConnectedLayer(object):
             else:
                 self.weights = tf.get_variable(self.name + '_weights',
                                                shape=[vec_size, self.output_size[-1]],
-                                               initializer=tf.truncated_normal_initializer(stddev=math.sqrt(2.0/self.output_size)),
+                                               initializer=tf.truncated_normal_initializer(stddev=math.sqrt(2.0 / self.output_size)),
                                                dtype=tf.float32)
 
             self.biases = tf.get_variable(self.name + '_bias',
