@@ -83,7 +83,7 @@ There are currently three methods available for loading your data. These will cr
 
 ### From Lemnatec Scanalyzer
 
-`biotools.snpshot2bgwas` will read the relevant metadata from a Lemnatec Scanalyzer `SnapshotInfo.csv` file.
+`biotools.snapshot2bgwas` will read the relevant metadata from a Lemnatec Scanalyzer `SnapshotInfo.csv` file.
 
 #### Parameters
 
@@ -94,6 +94,10 @@ There are currently three methods available for loading your data. These will cr
 `not_before` - (datetime, optional) Don't include any samples with a timestamp before this point.
 
 `prefix` - (string, optional) Only include samples with filenames beginning with this string.
+
+`stack` - (boolean, optional) Take all of the n images for a particular timepoint and stack them depth-wise into a single n-channel image.
+
+`treatments` (dictionary, optional) Specifies how the treatment is coded as a code-boolean pair where `1` is treatment and `0` is control. Default is `{'AA': '0', 'AB': '1'}`
 
 ## Options
 
@@ -121,6 +125,8 @@ There are currently three methods available for loading your data. These will cr
 ### Advanced Options
 
 These are advanced settings you can change before calling `model.start` if you want. However, the defaults are usually okay for most datasets.
+
+`model.set_random_seed(int)` - sets the random seed for improved reproducibility. Without this set, weight initialization will be different on each run. However, this does not provide perfect reproducability, since mini-batching is non-deterministic.
 
 `model.set_loss_function(['sce', 'mse'])` - sets the loss function used for embedding learning to either sigmoid cross-entropy (`sce`, default) or mean squared error (`mse`).
 

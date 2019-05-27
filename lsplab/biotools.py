@@ -9,15 +9,13 @@ import os
 import re
 import gc
 import random
+import json
 
 
 num_encodings = 3
 queue_capacity = 100
 min_queue_size = 16
 angle_regex = '^VIS_SV_(\d+)_'
-# Assuming AA = unstressed, AB = stressed
-treatments = {'AA': '0', 'AB': '1'}
-
 
 def __index_to_label__(index, gen_trans, chr_pos):
     chromosome = int(gen_trans.loci[index].name[chr_pos])
@@ -30,7 +28,6 @@ def __index_to_label__(index, gen_trans, chr_pos):
 def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename, multi_angle=False, num_folds=5):
     """Convert a .bgwas index file and its accompanying image directory into .tfrecords (split into five folds)"""
     output_path = os.path.join(output_dir, tfrecord_filename)
-    key_output_path = os.path.join(output_dir, 'key.csv')
 
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
@@ -100,11 +97,16 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
         for key in sorted(days_dict.keys()):
             records = days_dict[key]
             found = False
+            stacked = False
 
             for record in records:
                 r_IID = record[1]
                 r_treatment = record[3]
                 r_fn = record[4]
+
+                if r_fn.startswith('['):
+                    r_fn = json.loads(r_fn)
+                    stacked = True
 
                 if multi_angle:
                     if ('_'+image_angle+'_' in r_fn) and (r_IID == IID) and (r_treatment == treatment):
@@ -117,7 +119,12 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
                     if (r_IID == IID) and (r_treatment == treatment):
                         # Got a hit, add it to the list
                         found = True
-                        r_file_path = search_for_filename(r_fn)
+
+                        if stacked:
+                            r_file_path = [search_for_filename(f) for f in r_fn]
+                        else:
+                            r_file_path = search_for_filename(r_fn)
+
                         all_images.append(r_file_path)
                         break
 
@@ -138,7 +145,7 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
         ok = True
 
         for i, image_path in enumerate(record[5]):
-            if image_path is None:
+            if image_path is None or (isinstance(image_path, (list,)) and None in image_path):
                 print "No image at a timepoint {0} for record (ID {1})".format(i, record[1])
                 ok = False
                 break
@@ -182,7 +189,16 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
 
         # add all images to the feature list
         for j, image_path in enumerate(all_record_images):
-            image_data = np.array(Image.open(image_path))
+            if isinstance(image_path, (list,)):
+                all_channels = []
+
+                for current_channel in image_path:
+                    all_channels.append(np.expand_dims(np.array(Image.open(current_channel), dtype=np.uint8), axis=-1))
+
+                image_data = np.concatenate(all_channels, axis=2)
+            else:
+                image_data = np.array(Image.open(image_path), dtype=np.uint8)
+
             image_raw = image_data.tostring()
             feature_dict['image_data_{0}'.format(j)] = tf.train.Feature(bytes_list=_byte_feature(image_raw))
 
@@ -212,7 +228,7 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
     print "Done"
 
 
-def read_tfrecords_dataset(filename, image_height, image_width, num_timepoints, num_threads, cached=True, in_memory=False):
+def read_tfrecords_dataset(filename, image_height, image_width, image_depth, num_timepoints, num_threads, cached=True, in_memory=False):
     def parse_fn(example):
         features_dict = {
             'id': tf.FixedLenFeature((), tf.int64),
@@ -234,7 +250,7 @@ def read_tfrecords_dataset(filename, image_height, image_width, num_timepoints, 
         for i in range(num_timepoints):
             image_name = 'image_data_{0}'.format(i)
             image = tf.decode_raw(tf.sparse_tensor_to_dense(outputs[image_name], default_value=''), tf.uint8)
-            image = tf.reshape(image, [image_height, image_width, 3])
+            image = tf.reshape(image, [image_height, image_width, image_depth])
             image = tf.image.convert_image_dtype(image, dtype=tf.float32)
 
             ret[image_name] = image
@@ -256,10 +272,10 @@ def read_tfrecords_dataset(filename, image_height, image_width, num_timepoints, 
     return dataset, None
 
 
-def get_sample_from_tfrecords_shuffled(filename, batch_size, image_height, image_width, num_timepoints, queue_capacity, num_threads, cached=True, in_memory=False):
+def get_sample_from_tfrecords_shuffled(filename, batch_size, image_height, image_width, image_depth, num_timepoints, queue_capacity, num_threads, cached=True, in_memory=False):
     """Returns a batch from the specified .tfrecords file"""
 
-    dataset, cache_file_path = read_tfrecords_dataset(filename, image_height, image_width, num_timepoints, num_threads, cached, in_memory)
+    dataset, cache_file_path = read_tfrecords_dataset(filename, image_height, image_width, image_depth, num_timepoints, num_threads, cached, in_memory)
 
     dataset_shuf = dataset.apply(tf.contrib.data.shuffle_and_repeat(queue_capacity)).batch(batch_size=batch_size).prefetch(buffer_size=batch_size)
 
@@ -271,10 +287,10 @@ def get_sample_from_tfrecords_shuffled(filename, batch_size, image_height, image
     return next_element_shuf, init_op_shuf, cache_file_path
 
 
-def get_sample_from_tfrecords_inorder(filename, batch_size, image_height, image_width, num_timepoints, queue_capacity, num_threads, cached=True, in_memory=False):
+def get_sample_from_tfrecords_inorder(filename, batch_size, image_height, image_width, image_depth, num_timepoints, queue_capacity, num_threads, cached=True, in_memory=False):
     """Returns a batch from the specified .tfrecords file"""
 
-    dataset, cache_file_path = read_tfrecords_dataset(filename, image_height, image_width, num_timepoints, num_threads, cached, in_memory)
+    dataset, cache_file_path = read_tfrecords_dataset(filename, image_height, image_width, image_depth, num_timepoints, num_threads, cached, in_memory)
 
     dataset_inorder = dataset.repeat().batch(batch_size=batch_size).prefetch(buffer_size=batch_size)
 
@@ -369,7 +385,7 @@ def csv2ped(input_filename, output_file):
     df_map_out.to_csv(output_file+'.map', sep=output_delimiter, header=None, index=False, float_format='%.0f')
 
 
-def snapshot2bgwas(input_filename, output_filename, barcode_regex='^([A-Za-z]+)+(\d+)(AA|AB)\d+$', timestamp_format='%Y-%m-%d %H:%M:%S.%f', prefix='VIS', not_before=None):
+def snapshot2bgwas(input_filename, output_filename, barcode_regex='^([A-Za-z]+)+(\d+)(AA|AB)\d+$', timestamp_format='%Y-%m-%d %H:%M:%S.%f', prefix='VIS', not_before=None, stack=False, treatments={'AA': '0', 'AB': '1'}):
     """Converts a Lemnatec SnapshotInfo.csv file into a .bgwas file."""
     df_out = pd.DataFrame()
     uid = 0
@@ -392,15 +408,27 @@ def snapshot2bgwas(input_filename, output_filename, barcode_regex='^([A-Za-z]+)+
             print('Entry is before not_before cutoff, continuing...')
             continue
 
-        for image in image_filenames.split(';'):
-            if image and image.startswith(prefix):
-                image = image + '.png'
-                print('Processing entry for image %s...' % image)
+        all_images = image_filenames.split(';')[0:-1]
 
+        # Stack all images into an array
+        if stack:
+            cleaned = [image + '.png' for image in all_images if image and image.startswith(prefix)]
+
+            if len(cleaned) > 0:
                 if barcode in bc_dict.keys():
-                    bc_dict[barcode].append(image)
+                    bc_dict[barcode].append(cleaned)
                 else:
-                    bc_dict[barcode] = [image]
+                    bc_dict[barcode] = [cleaned]
+        else:
+            for image in all_images:
+                if image and image.startswith(prefix):
+                    image = image + '.png'
+                    print('Processing entry for image %s...' % image)
+
+                    if barcode in bc_dict.keys():
+                        bc_dict[barcode].append(image)
+                    else:
+                        bc_dict[barcode] = [image]
 
     min_image_count = min([len(images) for (_, images) in list(bc_dict.items())])
 
@@ -424,8 +452,11 @@ def snapshot2bgwas(input_filename, output_filename, barcode_regex='^([A-Za-z]+)+
 
         # Write a new row for each image
         for j, image in enumerate(images):
-            #row = [uid, RIL, timestamp.strftime(timestamp_format), treatment, image]
-            row = [uid, RIL, j, treatment, image]
+            if stack:
+                row = [uid, RIL, j, treatment, json.dumps(image).strip('"')]
+            else:
+                row = [uid, RIL, j, treatment, image]
+
             df_out = df_out.append(pd.DataFrame(row).T)
             uid += 1
 

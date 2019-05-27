@@ -115,7 +115,7 @@ class fullyConnectedLayer(object):
             else:
                 self.weights = tf.get_variable(self.name + '_weights',
                                                shape=[vec_size, self.output_size[-1]],
-                                               initializer=tf.truncated_normal_initializer(stddev=math.sqrt(2.0/self.output_size)),
+                                               initializer=tf.truncated_normal_initializer(stddev=math.sqrt(2.0 / self.output_size)),
                                                dtype=tf.float32)
 
             self.biases = tf.get_variable(self.name + '_bias',
@@ -177,14 +177,19 @@ class batchNormLayer(object):
     """Batch normalization layer"""
     __epsilon = 1e-3
     __decay = 0.9
+    __layer = None
 
     def __init__(self, name, input_size):
         self.input_size = input_size
         self.output_size = input_size
         self.name = name
 
+    def add_to_graph(self, graph):
+        with graph.as_default():
+            self.__layer = tf.keras.layers.BatchNormalization()
+
     def forward_pass(self, x, deterministic):
-        x = tf.layers.batch_normalization(x, training=(not deterministic))
+        x = self.__layer.apply(x, training=True)
 
         return x
 
