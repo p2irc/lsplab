@@ -83,7 +83,7 @@ There are currently three methods available for loading your data. These will cr
 
 ### From Lemnatec Scanalyzer
 
-`biotools.snpshot2bgwas` will read the relevant metadata from a Lemnatec Scanalyzer `SnapshotInfo.csv` file.
+`biotools.snapshot2bgwas` will read the relevant metadata from a Lemnatec Scanalyzer `SnapshotInfo.csv` file.
 
 #### Parameters
 
@@ -94,6 +94,10 @@ There are currently three methods available for loading your data. These will cr
 `not_before` - (datetime, optional) Don't include any samples with a timestamp before this point.
 
 `prefix` - (string, optional) Only include samples with filenames beginning with this string.
+
+`stack` - (boolean, optional) Take all of the n images for a particular timepoint and stack them depth-wise into a single n-channel image.
+
+`treatments` (dictionary, optional) Specifies how the treatment is coded as a code-boolean pair where `1` is treatment and `0` is control. Default is `{'AA': '0', 'AB': '1'}`
 
 ## Options
 
