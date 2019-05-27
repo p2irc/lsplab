@@ -177,14 +177,19 @@ class batchNormLayer(object):
     """Batch normalization layer"""
     __epsilon = 1e-3
     __decay = 0.9
+    __layer = None
 
     def __init__(self, name, input_size):
         self.input_size = input_size
         self.output_size = input_size
         self.name = name
 
+    def add_to_graph(self, graph):
+        with graph.as_default():
+            self.__layer = tf.keras.layers.BatchNormalization()
+
     def forward_pass(self, x, deterministic):
-        x = tf.layers.batch_normalization(x, training=(not deterministic))
+        x = self.__layer.apply(x, training=True)
 
         return x
 
