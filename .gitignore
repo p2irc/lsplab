@@ -1,0 +1,6 @@
+/data/
+*saved_state
+*-results
+/.idea/*
+*.pyc
+example_pipeline*

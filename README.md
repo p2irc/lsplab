@@ -142,5 +142,5 @@ These are advanced settings you can change before calling `model.start` if you w
 
 `model.set_image_standardization(False)` - Don't standardize images during embedding learning (default is `True`).
 
-
+`model.set_mode(['longitudinal', 'cross sectional'])` - The final step either calculates the geodesic path between the first and last timepoints (`longitudinal`, default) or between the final timepoint for the treated individual and the final timepoint for the control individual for each accession (`cross sectional`).
 
