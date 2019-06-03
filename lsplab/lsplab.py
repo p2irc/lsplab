@@ -623,7 +623,7 @@ class lsp(object):
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=16, upscale_factor=2, activation_function='relu')
         self.__decoder_net.add_batchnorm_layer()
 
-        self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function='relu')
+        self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function=None)
 
     def __find_canonical_transformation(self, processed_images):
         """Find a linear transformation between the test points projected in
