@@ -88,7 +88,7 @@ class lsp(object):
     lstm = None
     __decoder_net = None
     __n = 16
-    __decoder_iterations = 12000
+    __decoder_iterations = 30000
     __geodesic_path_iterations = 400
     __transformer_iterations = 25000
     __target_vertices = 30

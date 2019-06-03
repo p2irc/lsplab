@@ -126,21 +126,29 @@ There are currently three methods available for loading your data. These will cr
 
 These are advanced settings you can change before calling `model.start` if you want. However, the defaults are usually okay for most datasets.
 
-`model.set_random_seed(int)` - sets the random seed for improved reproducibility. Without this set, weight initialization will be different on each run. However, this does not provide perfect reproducability, since mini-batching is non-deterministic.
+`model.set_random_seed(int)` - Sets the random seed for improved reproducibility. Without this set, weight initialization will be different on each run. However, this does not provide perfect reproducability, since mini-batching is non-deterministic.
 
-`model.set_loss_function(['sce', 'mse'])` - sets the loss function used for embedding learning to either sigmoid cross-entropy (`sce`, default) or mean squared error (`mse`).
+`model.set_loss_function(['sce', 'mse'])` - Sets the loss function used for embedding learning to either sigmoid cross-entropy (`sce`, default) or mean squared error (`mse`).
 
-`model.set_n(int)` - sets the dimensionality of the latent space (default is `16`). The default should usually be sufficient.
+`model.set_n(int)` - Sets the dimensionality of the latent space (default is `16`). The default should usually be sufficient.
 
-`model.set_variance_constant(int)` - sets the value lambda<sub>v</sub> described in the paper the paper (default is `0.2`).
+`model.set_variance_constant(int)` - Sets the value lambda<sub>v</sub> described in the paper the paper (default is `0.2`).
 
-`model.set_transformation_method(['Linear', 'NeuralNet'])` - use either a linear regression method (`Linear`, default) or a 2-layer neural network (`NeuralNet`) for subspace transformations. Linear methods are less likely to overfit but may lose imprtant non-linearity in the data manifold.
+`model.set_transformation_method(['Linear', 'NeuralNet'])` - Use either a linear regression method (`Linear`, default) or a 2-layer neural network (`NeuralNet`) for subspace transformations. Linear methods are less likely to overfit but may lose imprtant non-linearity in the data manifold.
 
 `model.set_augmentation(True)` - Use data augmentation for embedding learning and decoder training (default is `False`). Performs horizontal flipping and brightness/contrast skews.
 
-`model.set_cropping_augmentation(True)` - Use random cropping augmentation when augmentation is turned on (default is `False`).
+`model.set_cropping_augmentation(bool)` - Use random cropping augmentation when augmentation is turned on (default is `False`).
 
-`model.set_image_standardization(False)` - Don't standardize images during embedding learning (default is `True`).
+`model.set_image_standardization(bool)` - Standardize images during embedding learning (default is `True`).
 
 `model.set_mode(['longitudinal', 'cross sectional'])` - The final step either calculates the geodesic path between the first and last timepoints (`longitudinal`, default) or between the final timepoint for the treated individual and the final timepoint for the control individual for each accession (`cross sectional`).
+
+`model.set_num_decoder_iterations(int)` - Sets the number of batches to do for decoder training (default is `30000`).
+
+`model.set_num_path_vertices(int)` - Sets the number of vertices for the geodesic path optimization (default is `30`).
+
+`model.set_use_memory_cache(bool)` - Caches training samples in memory if `True`, or on disk if `False` (default `False`). Using the in-memory cache can greatly increase speed, but may cause you to run out of system memory for large datasets.
+
+
 
