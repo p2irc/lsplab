@@ -696,7 +696,8 @@ class lsp(object):
                     elif self.__mode == 'cross sectional':
                         interpolated_points = [tf.Variable(tf.zeros([self.__n]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations)]
 
-                    self.__geodesic_interpolated_points.append(interpolated_points)
+                    if self.__geodesic_num_interpolations > 0:
+                        self.__geodesic_interpolated_points.append(interpolated_points)
 
                     # Build the list of distances (losses) between points
                     previous_node = [start_point]
@@ -1095,7 +1096,6 @@ class lsp(object):
 
                                 all_reconstruction_gradients.append(reconstruction_gradients)
 
-                                # QQ
                                 pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
 
                                 pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
