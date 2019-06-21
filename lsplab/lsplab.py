@@ -39,6 +39,7 @@ class lsp(object):
     __num_failed_attempts = 0
     __mode = 'longitudinal'
     __random_seed = None
+    __use_batchnorm = False
 
     __current_fold = None
     __num_folds = None
@@ -164,6 +165,9 @@ class lsp(object):
     def set_random_seed(self, seed):
         self.__random_seed = seed
 
+    def set_use_batchnorm(self, use_batchnorm):
+        self.__use_batchnorm = use_batchnorm
+
     def save_state(self, directory=None):
         """Save all trainable variables as a checkpoint in the current working path"""
         self.__log('Saving parameters...')
@@ -213,7 +217,7 @@ class lsp(object):
 
     def __save_as_image(self, mat, path):
         plt.clf()
-        plt.imshow(mat)
+        plt.imshow(mat, cmap='gray')
         plt.savefig(path)
 
     def set_loss_function(self, lf):
@@ -547,7 +551,7 @@ class lsp(object):
         return ret[0]
 
     def __build_transformer(self):
-        # Define the structure of the netwrok used for subspace transformation
+        # Define the structure of the network used for subspace transformation
         self.__transformer_net.add_input_layer()
 
         self.__transformer_net.add_fully_connected_layer(output_size=(self.__n * 2), activation_function='tanh', regularization_coefficient=self.__global_reg)
@@ -560,68 +564,82 @@ class lsp(object):
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, self.__image_depth, 16], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        self.feature_extractor.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 16, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        self.feature_extractor.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        self.feature_extractor.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=2)
-        self.feature_extractor.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
-        self.feature_extractor.add_fully_connected_layer(output_size=64, activation_function='relu', regularization_coefficient=self.__global_reg)
+        self.feature_extractor.add_fully_connected_layer(output_size=64, activation_function='relu', regularization_coefficient=0.)
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
-        self.feature_extractor.add_output_layer(output_size=self.__n, regularization_coefficient=self.__global_reg)
+        self.feature_extractor.add_output_layer(output_size=self.__n, regularization_coefficient=0.)
 
     def __build_decoder(self):
         self.__decoder_net.add_input_layer(reshape=True)
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, self.__n, 16], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=16, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 16, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=32, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=32, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 64], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 64, 64], stride_length=1,  activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 64, 64], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=64, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 64, 64], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 64, 64], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 64, 64], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=64, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 64, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 16], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=16, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 16, 16], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=16, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 16, 16], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=16, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function=None)
 
@@ -1187,7 +1205,7 @@ class lsp(object):
 
                         saliency_result = self.feature_extractor.forward_pass(saliency_image_resized)
 
-                    decoder_test_vec = self.__decoder_net.forward_pass(processed_images_test[-1])
+                    decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in processed_images_test]
 
                     # Aggregate tensorboard summaries
                     if tensorboard is not None:
@@ -1205,7 +1223,6 @@ class lsp(object):
                         tf.summary.scalar('decoder/reconstruction_loss_batch_mean', reconstruction_loss, collections=['decoder_summaries'])
                         tf.summary.scalar('decoder/reconstruction_loss_batch_var', reconstruction_var, collections=['decoder_summaries'])
                         tf.summary.scalar('decoder/reconstruction_diversity', reconstruction_diversity, collections=['decoder_summaries'])
-
                         tf.summary.image('decoder/reconstructions', reconstructions, collections=['decoder_summaries'])
 
                         # Filter visualizations
@@ -1282,7 +1299,7 @@ class lsp(object):
 
                                 if decoder_vis:
                                     self.__log('Testing decoder...')
-                                    self.__test_decoder(decoder_test_vec, image_data_test[-1])
+                                    self.__test_decoder(decoder_test_vec, image_data_test)
 
                                 # Save the parameters of the decoder so we can load it later
                                 self.__save_decoder()
@@ -1416,7 +1433,7 @@ class lsp(object):
         t = trange(self.__pretraining_batches)
 
         for i in t:
-            if i % self.__report_rate == 0:
+            if i % self.__report_rate == 0 and i > 0:
                 if self.__tb_file is not None:
                     _, batch_loss, summary = self.__session.run([pretrain_op, loss_op, self.__pretraining_summaries])
                     self.__tb_writer.add_summary(summary, i)
@@ -1445,7 +1462,7 @@ class lsp(object):
         t = trange(self.__decoder_iterations)
 
         for i in t:
-            if i % self.__report_rate == 0:
+            if i % self.__report_rate == 0 and i > 0:
                 if self.__tb_file is not None:
                     _, batch_loss, summary = self.__session.run([train_op, loss_op, self.__decoder_summaries])
                     self.__tb_writer.add_summary(summary, i)
@@ -1462,16 +1479,17 @@ class lsp(object):
                 elapsed = time.time() - start_time
                 samples_per_sec = (self.__batch_size / elapsed) * self.__num_gpus
 
-    def __test_decoder(self, decoder_op, test_image_op):
-        test_image, decoder_output = self.__session.run([test_image_op, decoder_op])
-        plotter.make_directory(os.path.join(self.results_path, 'decoder'))
+    def __test_decoder(self, decoder_ops, test_image_ops):
+        for j, (decoder_op, test_image_op) in enumerate(zip(decoder_ops,test_image_ops)):
+            test_image, decoder_output = self.__session.run([test_image_op, decoder_op])
+            plotter.make_directory(os.path.join(self.results_path, 'decoder'))
 
-        for i in range(self.__batch_size):
-            real = np.squeeze(test_image[i, :, :, :])
-            self.__save_as_image(real, os.path.join(self.results_path, 'decoder', 'decoder-fold{1}-real-{0}.png'.format(i, self.__current_fold)))
+            for i in range(self.__batch_size):
+                real = np.squeeze(test_image[i, :, :, :])
+                self.__save_as_image(real, os.path.join(self.results_path, 'decoder', 'decoder-real-sample{1}-timestep{0}.png'.format(j, i)))
 
-            generated = np.squeeze(decoder_output[i, :, :, :])
-            self.__save_as_image(generated, os.path.join(self.results_path, 'decoder', 'decoder-fold{1}-generated-{0}.png'.format(i, self.__current_fold)))
+                generated = np.squeeze(decoder_output[i, :, :, :])
+                self.__save_as_image(generated, os.path.join(self.results_path, 'decoder', 'decoder-generated-sample{1}-timestep{0}.png'.format(j, i)))
 
     def __get_weights_as_image(self, kernel, normalize=True):
         """Filter visualization, adapted with permission from https://gist.github.com/kukuruza/03731dc494603ceab0c5"""
