@@ -582,11 +582,9 @@ class lsp(object):
         if self.__use_batchnorm:
             self.feature_extractor.add_batchnorm_layer()
 
-        self.feature_extractor.add_fully_connected_layer(output_size=64, activation_function='relu', regularization_coefficient=0.)
-        if self.__use_batchnorm:
-            self.feature_extractor.add_batchnorm_layer()
+        self.feature_extractor.add_fully_connected_layer(output_size=64, activation_function='relu', regularization_coefficient=self.__global_reg)
 
-        self.feature_extractor.add_output_layer(output_size=self.__n, regularization_coefficient=0.)
+        self.feature_extractor.add_output_layer(output_size=self.__n, regularization_coefficient=self.__global_reg)
 
     def __build_decoder(self):
         self.__decoder_net.add_input_layer(reshape=True)
@@ -641,7 +639,7 @@ class lsp(object):
         if self.__use_batchnorm:
             self.__decoder_net.add_batchnorm_layer()
 
-        self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function=None)
+        self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function='tanh')
 
     def __find_canonical_transformation(self, processed_images):
         """Find a linear transformation between the test points projected in
@@ -1105,7 +1103,7 @@ class lsp(object):
                                 _, rec_var = tf.nn.moments(reconstructions, axes=[0])
                                 reconstruction_diversity = tf.reduce_mean(rec_var)
 
-                                reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions)), axis=[1, 2, 3])
+                                reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images - .5, reconstructions)), axis=[1, 2, 3])
                                 reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
 
                                 reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
@@ -1223,7 +1221,7 @@ class lsp(object):
                         tf.summary.scalar('decoder/reconstruction_loss_batch_mean', reconstruction_loss, collections=['decoder_summaries'])
                         tf.summary.scalar('decoder/reconstruction_loss_batch_var', reconstruction_var, collections=['decoder_summaries'])
                         tf.summary.scalar('decoder/reconstruction_diversity', reconstruction_diversity, collections=['decoder_summaries'])
-                        tf.summary.image('decoder/reconstructions', reconstructions, collections=['decoder_summaries'])
+                        tf.summary.image('decoder/reconstructions', reconstructions + .5, collections=['decoder_summaries'])
 
                         # Filter visualizations
                         filter_summary = self.__get_weights_as_image(self.feature_extractor.first_layer().weights)
