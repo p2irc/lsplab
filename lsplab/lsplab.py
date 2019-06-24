@@ -1457,11 +1457,13 @@ class lsp(object):
                 samples_per_sec = (self.__batch_size / elapsed) * self.__num_gpus
 
     def __test_decoder(self, decoder_ops, test_image_ops):
-        for j, (decoder_op, test_image_op) in enumerate(zip(decoder_ops,test_image_ops)):
-            test_image, decoder_output = self.__session.run([test_image_op, decoder_op])
-            plotter.make_directory(os.path.join(self.results_path, 'decoder'))
+        plotter.make_directory(os.path.join(self.results_path, 'decoder'))
+        test_results = self.__session.run(test_image_ops + decoder_ops)
+        test_images = test_results[:self.__num_timepoints]
+        decoder_images = test_results[self.__num_timepoints:]
 
-            for i in range(self.__batch_size):
+        for i, (test_image, decoder_output) in enumerate(list(zip(test_images, decoder_images))):
+            for j in range(self.__batch_size):
                 real = np.squeeze(test_image[i, :, :, :])
                 self.__save_as_image(real, os.path.join(self.results_path, 'decoder', 'decoder-real-sample{1}-timestep{0}.png'.format(j, i)))
 
