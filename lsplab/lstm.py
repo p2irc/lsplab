@@ -15,7 +15,7 @@ class lstm(object):
                                            1,
                                            False,
                                            batch_size,
-                                           'tanh',
+                                           None,
                                            'xavier',
                                            regularization_coefficient)
 

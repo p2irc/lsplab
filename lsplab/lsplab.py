@@ -217,7 +217,7 @@ class lsp(object):
 
     def __save_as_image(self, mat, path):
         plt.clf()
-        plt.imshow(mat, cmap='gray')
+        plt.imshow(mat, cmap='gray', vmin=0., vmax=1.)
         plt.savefig(path)
 
     def set_loss_function(self, lf):
@@ -1112,7 +1112,7 @@ class lsp(object):
 
                                 all_reconstruction_gradients.append(reconstruction_gradients)
 
-                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
+                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, emb_cost])
 
                                 pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
 
@@ -1203,7 +1203,7 @@ class lsp(object):
 
                         saliency_result = self.feature_extractor.forward_pass(saliency_image_resized)
 
-                    decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in processed_images_test]
+                    decoder_test_vec = [self.__decoder_net.forward_pass(p) + 0.5 for p in processed_images_test]
 
                     # Aggregate tensorboard summaries
                     if tensorboard is not None:
@@ -1378,32 +1378,11 @@ class lsp(object):
                             continue
 
         if ordination_vis:
-            # Write general ordination plot
-            all_keys = [x[0] for x in self.__all_projections[0]]
-            combined_vecs = []
-
-            def find_vec_for_genotype(gen, ss):
-                for s in ss:
-                    if s[0] == gen:
-                        return s[2]
-
-                return None
-
-            for k in all_keys:
-               a = find_vec_for_genotype(k, self.__all_projections[0])
-               b = find_vec_for_genotype(k, self.__all_projections[-1])
-
-               if a is None or b is None:
-                   continue
-
-               combined_vecs.append((b - a))
-
             self.__log('Saving ordination plots...')
 
-            plotter.plot_general_ordination_plot(combined_vecs,
-                                                self.results_path + '/ordination-plots',
-                                                self.__num_timepoints,
-                                                self.__n)
+            plotter.plot_general_ordination_plot(self.__all_projections,
+                                                 self.results_path + '/ordination-plots',
+                                                 self.__n)
 
         self.__log('Sanity checks:')
         self.__reporter.print_all()
