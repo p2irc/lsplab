@@ -1464,11 +1464,11 @@ class lsp(object):
 
         for i, (test_image, decoder_output) in enumerate(list(zip(test_images, decoder_images))):
             for j in range(self.__batch_size):
-                real = np.squeeze(test_image[i, :, :, :])
-                self.__save_as_image(real, os.path.join(self.results_path, 'decoder', 'decoder-real-sample{1}-timestep{0}.png'.format(j, i)))
+                real = np.squeeze(test_image[j, :, :, :])
+                self.__save_as_image(real, os.path.join(self.results_path, 'decoder', 'decoder-real-sample{0}-timestep{1}.png'.format(j, i)))
 
-                generated = np.squeeze(decoder_output[i, :, :, :])
-                self.__save_as_image(generated, os.path.join(self.results_path, 'decoder', 'decoder-generated-sample{1}-timestep{0}.png'.format(j, i)))
+                generated = np.squeeze(decoder_output[j, :, :, :])
+                self.__save_as_image(generated, os.path.join(self.results_path, 'decoder', 'decoder-generated-sample{0}-timestep{1}.png'.format(j, i)))
 
     def __get_weights_as_image(self, kernel, normalize=True):
         """Filter visualization, adapted with permission from https://gist.github.com/kukuruza/03731dc494603ceab0c5"""
