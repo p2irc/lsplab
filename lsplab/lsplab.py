@@ -693,8 +693,8 @@ class lsp(object):
             with tf.device('/device:GPU:{0}'.format(d)):
                 with tf.name_scope('gpu_%d_' % (d)) as scope:
                     def decoded_L2_distance(embedding_A, embedding_B):
-                        return tf.norm(tf.subtract(self.__decoder_net.forward_pass(embedding_A),
-                                                   self.__decoder_net.forward_pass(embedding_B)))
+                        return tf.norm(tf.subtract((self.__decoder_net.forward_pass(embedding_A) + 1.) / 2.,
+                                                   (self.__decoder_net.forward_pass(embedding_B) + 1.) / 2.))
 
                     # Make static placeholders for the start, end, and all anchors in between
                     start_point = tf.placeholder(tf.float32, shape=(self.__n))
@@ -765,7 +765,7 @@ class lsp(object):
                                         tf.variables_initializer(var_list=optimizer_vars)]
 
             # Graph ops for generating the interpolation image sequence by decoding the intermediate points
-            self.__geodesic_decoded_intermediate = [[self.__decoder_net.forward_pass(x) for x in d] for d in self.__geodesic_interpolated_points]
+            self.__geodesic_decoded_intermediate = [[(self.__decoder_net.forward_pass(x) + 1.) / 2. for x in d] for d in self.__geodesic_interpolated_points]
 
 
     def __geodesic_distance(self, series, t):
@@ -1093,7 +1093,7 @@ class lsp(object):
                                 lstm_reg_loss = self.lstm.get_regularization_loss()
 
                                 # Decoder takes the output from the latent space encoder and tries to reconstruct the input
-                                reconstructions = tf.concat([self.__decoder_net.forward_pass(emb) for emb in unaugmented_embeddings], axis=0)
+                                reconstructions = tf.concat([(self.__decoder_net.forward_pass(emb) + 1.) / 2. for emb in unaugmented_embeddings], axis=0)
 
                                 decoder_out = self.__decoder_net.layers[-1].output_size
 
@@ -1103,7 +1103,7 @@ class lsp(object):
                                 _, rec_var = tf.nn.moments(reconstructions, axes=[0])
                                 reconstruction_diversity = tf.reduce_mean(rec_var)
 
-                                reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images - .5, reconstructions)), axis=[1, 2, 3])
+                                reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions)), axis=[1, 2, 3])
                                 reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
 
                                 reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
@@ -1203,7 +1203,7 @@ class lsp(object):
 
                         saliency_result = self.feature_extractor.forward_pass(saliency_image_resized)
 
-                    decoder_test_vec = [self.__decoder_net.forward_pass(p) + 0.5 for p in processed_images_test]
+                    decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in processed_images_test]
 
                     # Aggregate tensorboard summaries
                     if tensorboard is not None:
@@ -1221,7 +1221,7 @@ class lsp(object):
                         tf.summary.scalar('decoder/reconstruction_loss_batch_mean', reconstruction_loss, collections=['decoder_summaries'])
                         tf.summary.scalar('decoder/reconstruction_loss_batch_var', reconstruction_var, collections=['decoder_summaries'])
                         tf.summary.scalar('decoder/reconstruction_diversity', reconstruction_diversity, collections=['decoder_summaries'])
-                        tf.summary.image('decoder/reconstructions', reconstructions + .5, collections=['decoder_summaries'])
+                        tf.summary.image('decoder/reconstructions', reconstructions, collections=['decoder_summaries'])
 
                         # Filter visualizations
                         filter_summary = self.__get_weights_as_image(self.feature_extractor.first_layer().weights)
@@ -1302,9 +1302,16 @@ class lsp(object):
                                 # Save the parameters of the decoder so we can load it later
                                 self.__save_decoder()
 
-
                             # If we are done all the folds now
                             if (self.__current_fold + 1) == self.__num_folds:
+                                # Ordination plots
+                                if ordination_vis:
+                                    self.__log('Saving ordination plots...')
+
+                                    plotter.plot_general_ordination_plot(self.__all_projections,
+                                                                         self.results_path + '/ordination-plots',
+                                                                         self.__n)
+
                                 # Saliency visualization
                                 if saliency_target is not None:
                                     self.__log('Outputting saliency figure...')
@@ -1377,20 +1384,13 @@ class lsp(object):
                             self.__num_failed_attempts += 1
                             continue
 
-        if ordination_vis:
-            self.__log('Saving ordination plots...')
-
-            plotter.plot_general_ordination_plot(self.__all_projections,
-                                                 self.results_path + '/ordination-plots',
-                                                 self.__n)
-
         self.__log('Sanity checks:')
         self.__reporter.print_all()
 
         if self.__reporter.all_succeeded():
             self.__log(emoji.emojize('Everything looks like it succeeded! Check the output folder for results. :beer_mug:'))
         else:
-            self.__log('Something went wrong. Results were written but not expected to be correct.')
+            self.__log('One or more folds failed. The output was not written.')
 
         self.__log('Run statistics:')
         self.__log('Total time elapsed: {0}'.format(self.__global_timer.elapsed()))
