@@ -20,12 +20,12 @@ def make_directory(path):
 
 def get_colormap(num_timepoints, condition):
     if condition == 'control':
-        return [cm.Blues(x) for x in np.linspace(0.0, 1.0, num_timepoints)]
+        return [cm.Blues(x) for x in np.linspace(0.4, 1.0, num_timepoints)]
     else:
-        return [cm.Reds(x) for x in np.linspace(0.0, 1.0, num_timepoints)]
+        return [cm.Reds(x) for x in np.linspace(0.4, 1.0, num_timepoints)]
 
 
-def plot_general_ordination_plot(raw, output_path, original_dim):
+def plot_general_ordination_plot(raw, output_path):
     num_timepoints = len(raw)
 
     colors_control = get_colormap(num_timepoints, 'control')
@@ -55,11 +55,12 @@ def plot_general_ordination_plot(raw, output_path, original_dim):
         else:
             treateds.append(d)
 
-    for points in treateds:
-        plt.scatter(points[:, 0], points[:, 1], color=colors_treated, alpha=alpha)
+    treateds = np.array(treateds)
+    controls = np.array(controls)
 
-    for points in controls:
-        plt.scatter(points[:, 0], points[:, 1], color=colors_control, alpha=alpha)
+    plt.scatter(treateds[0][:, 0], treateds[0][:, 1], color=colors_treated, alpha=alpha)
+
+    plt.scatter(controls[0][:, 0], controls[0][:, 1], color=colors_control, alpha=alpha)
 
     plt.savefig('{0}/general_ordination.png'.format(output_path))
     plt.close(fig)
