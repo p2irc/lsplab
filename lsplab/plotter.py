@@ -30,8 +30,9 @@ def plot_general_ordination_plot(raw, output_path):
 
     colors_control = get_colormap(num_timepoints, 'control')
     colors_treated = get_colormap(num_timepoints, 'treated')
-    treatments = [x[1] for x in raw[0]]
     features = np.array([item for sublist in [[x[2] for x in t] for t in raw] for item in sublist])
+
+    treatments = [row[1] for row in raw[0]] * num_timepoints
 
     make_directory(output_path)
 
@@ -39,28 +40,20 @@ def plot_general_ordination_plot(raw, output_path):
     pca.train(features, new_dim)
     trans = pca.transform(features)
 
+    trans = trans.reshape([num_timepoints, -1, new_dim])
+
     # Plotsky
     fig = plt.figure()
 
-    treateds = []
-    controls = []
+    for i in range(len(trans[0])):
+        t = treatments[i]
 
-    for i in range(0, len(trans), num_timepoints):
-        t = treatments[i / num_timepoints]
+        d = np.array([x[i] for x in trans])
 
-        d = trans[i:i+num_timepoints]
-
-        if t == 0:
-            controls.append(d)
+        if t == 1:
+            plt.scatter(d[:, 0], d[:, 1], color=colors_treated, alpha=alpha)
         else:
-            treateds.append(d)
-
-    treateds = np.array(treateds)
-    controls = np.array(controls)
-
-    plt.scatter(treateds[0][:, 0], treateds[0][:, 1], color=colors_treated, alpha=alpha)
-
-    plt.scatter(controls[0][:, 0], controls[0][:, 1], color=colors_control, alpha=alpha)
+            plt.scatter(d[:, 0], d[:, 1], color=colors_control, alpha=alpha)
 
     plt.savefig('{0}/general_ordination.png'.format(output_path))
     plt.close(fig)
