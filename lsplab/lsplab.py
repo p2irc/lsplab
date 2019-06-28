@@ -639,7 +639,7 @@ class lsp(object):
         if self.__use_batchnorm:
             self.__decoder_net.add_batchnorm_layer()
 
-        self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function='tanh')
+        self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function='relu')
 
     def __find_canonical_transformation(self, processed_images):
         """Find a linear transformation between the test points projected in
@@ -693,8 +693,8 @@ class lsp(object):
             with tf.device('/device:GPU:{0}'.format(d)):
                 with tf.name_scope('gpu_%d_' % (d)) as scope:
                     def decoded_L2_distance(embedding_A, embedding_B):
-                        return tf.norm(tf.subtract((self.__decoder_net.forward_pass(embedding_A) + 1.) / 2.,
-                                                   (self.__decoder_net.forward_pass(embedding_B) + 1.) / 2.))
+                        return tf.norm(tf.subtract(self.__decoder_net.forward_pass(embedding_A),
+                                                   self.__decoder_net.forward_pass(embedding_B)))
 
                     # Make static placeholders for the start, end, and all anchors in between
                     start_point = tf.placeholder(tf.float32, shape=(self.__n))
@@ -765,7 +765,7 @@ class lsp(object):
                                         tf.variables_initializer(var_list=optimizer_vars)]
 
             # Graph ops for generating the interpolation image sequence by decoding the intermediate points
-            self.__geodesic_decoded_intermediate = [[(self.__decoder_net.forward_pass(x) + 1.) / 2. for x in d] for d in self.__geodesic_interpolated_points]
+            self.__geodesic_decoded_intermediate = [[self.__decoder_net.forward_pass(x) for x in d] for d in self.__geodesic_interpolated_points]
 
 
     def __geodesic_distance(self, series, t):
@@ -1093,7 +1093,7 @@ class lsp(object):
                                 lstm_reg_loss = self.lstm.get_regularization_loss()
 
                                 # Decoder takes the output from the latent space encoder and tries to reconstruct the input
-                                reconstructions = tf.concat([(self.__decoder_net.forward_pass(emb) + 1.) / 2. for emb in unaugmented_embeddings], axis=0)
+                                reconstructions = tf.concat([self.__decoder_net.forward_pass(emb) for emb in unaugmented_embeddings], axis=0)
 
                                 decoder_out = self.__decoder_net.layers[-1].output_size
 
@@ -1112,7 +1112,7 @@ class lsp(object):
 
                                 all_reconstruction_gradients.append(reconstruction_gradients)
 
-                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, emb_cost])
+                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
 
                                 pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
 
@@ -1203,7 +1203,7 @@ class lsp(object):
 
                         saliency_result = self.feature_extractor.forward_pass(saliency_image_resized)
 
-                    decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in processed_images_test]
+                    decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in processed_images_test]
 
                     # Aggregate tensorboard summaries
                     if tensorboard is not None:
@@ -1309,8 +1309,7 @@ class lsp(object):
                                     self.__log('Saving ordination plots...')
 
                                     plotter.plot_general_ordination_plot(self.__all_projections,
-                                                                         self.results_path + '/ordination-plots',
-                                                                         self.__n)
+                                                                         self.results_path + '/ordination-plots')
 
                                 # Saliency visualization
                                 if saliency_target is not None:
