@@ -584,7 +584,7 @@ class lsp(object):
 
         self.feature_extractor.add_fully_connected_layer(output_size=64, activation_function='relu', regularization_coefficient=self.__global_reg)
 
-        self.feature_extractor.add_output_layer(output_size=self.__n, regularization_coefficient=self.__global_reg)
+        self.feature_extractor.add_output_layer(output_size=self.__n, activation_function='relu', regularization_coefficient=self.__global_reg)
 
     def __build_decoder(self):
         self.__decoder_net.add_input_layer(reshape=True)
@@ -1112,7 +1112,7 @@ class lsp(object):
 
                                 all_reconstruction_gradients.append(reconstruction_gradients)
 
-                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
+                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost * 100.])
 
                                 pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
 
