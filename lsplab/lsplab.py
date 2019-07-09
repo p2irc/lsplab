@@ -34,6 +34,7 @@ class lsp(object):
     __batch_size = None
     __report_rate = None
     __loss_function = 'sce'
+    __decoder_activation='tanh'
     __image_depth = 3
     __num_fold_restarts = 10
     __num_failed_attempts = 0
@@ -639,7 +640,12 @@ class lsp(object):
         if self.__use_batchnorm:
             self.__decoder_net.add_batchnorm_layer()
 
-        self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function='relu')
+        if self.__decoder_activation == 'tanh':
+            self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function='tanh')
+        elif self.__decoder_activation == 'relu':
+            self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function='relu')
+        else:
+            self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function=None)
 
     def __find_canonical_transformation(self, processed_images):
         """Find a linear transformation between the test points projected in
@@ -1065,6 +1071,7 @@ class lsp(object):
                                     embeddings.append(emb)
 
                                 unaugmented_embeddings = []
+                                recon_targets = []
 
                                 for image in image_data:
                                     if self.__do_crop:
@@ -1073,6 +1080,9 @@ class lsp(object):
                                     image = self.__apply_image_standardization(image)
 
                                     unaugmented_embeddings.append(self.feature_extractor.forward_pass(image))
+
+                                    if self.__decoder_activation == 'tanh':
+                                        recon_targets.append(image)
 
                                 all_emb = tf.concat(embeddings, 0)
                                 avg = tf.reduce_mean(all_emb, axis=0)
@@ -1093,22 +1103,35 @@ class lsp(object):
                                 lstm_reg_loss = self.lstm.get_regularization_loss()
 
                                 # Decoder takes the output from the latent space encoder and tries to reconstruct the input
-                                reconstructions = tf.concat([self.__decoder_net.forward_pass(emb) for emb in unaugmented_embeddings], axis=0)
+                                reconstructions = [self.__decoder_net.forward_pass(emb) for emb in unaugmented_embeddings]
+                                reconstructions_tensor = tf.concat(reconstructions, axis=0)
+                                #reconstruction_outputs = tf.image.resize_images(reconstructions_tensor, [self.__image_height, self.__image_width])
 
                                 decoder_out = self.__decoder_net.layers[-1].output_size
 
-                                original_images = tf.image.resize_images(tf.concat(image_data, axis=0), [decoder_out[1], decoder_out[2]])
+                                if self.__decoder_activation == 'tanh':
+                                    original_images = tf.image.resize_images(tf.concat(image_data, axis=0), [decoder_out[1], decoder_out[2]])
+                                else:
+                                    original_images = tf.image.resize_images(tf.concat(recon_targets, axis=0), [decoder_out[1], decoder_out[2]])
 
                                 # A measure of how diverse the reconstructions are
-                                _, rec_var = tf.nn.moments(reconstructions, axes=[0])
+                                _, rec_var = tf.nn.moments(reconstructions_tensor, axes=[1])
                                 reconstruction_diversity = tf.reduce_mean(rec_var)
 
-                                reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions)), axis=[1, 2, 3])
+                                # Cycle loss
+                                recon_predicted_treatment, _ = self.lstm.forward_pass([self.feature_extractor.forward_pass(tf.image.resize_images(image, [self.__image_height, self.__image_width])) for image in reconstructions])
+                                recon_treatment_loss = self.__get_treatment_loss(treatment, recon_predicted_treatment)
+
+                                reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions_tensor)), axis=[1, 2, 3])
                                 reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
+
+                                total_reconstruction_loss = tf.reduce_sum([recon_treatment_loss * 0.1, reconstruction_diversity * 0.1, reconstruction_loss])
 
                                 reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
 
-                                reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, reconstruction_vars)
+                                # QQ
+                                #reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, reconstruction_vars)
+                                reconstruction_gradients, _ = self.__get_clipped_gradients(total_reconstruction_loss, reconstruction_vars)
 
                                 all_reconstruction_gradients.append(reconstruction_gradients)
 
@@ -1203,7 +1226,10 @@ class lsp(object):
 
                         saliency_result = self.feature_extractor.forward_pass(saliency_image_resized)
 
-                    decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in processed_images_test]
+                    if self.__decoder_activation == 'tanh':
+                        decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in processed_images_test]
+                    else:
+                        decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in processed_images_test]
 
                     # Aggregate tensorboard summaries
                     if tensorboard is not None:
@@ -1221,7 +1247,9 @@ class lsp(object):
                         tf.summary.scalar('decoder/reconstruction_loss_batch_mean', reconstruction_loss, collections=['decoder_summaries'])
                         tf.summary.scalar('decoder/reconstruction_loss_batch_var', reconstruction_var, collections=['decoder_summaries'])
                         tf.summary.scalar('decoder/reconstruction_diversity', reconstruction_diversity, collections=['decoder_summaries'])
-                        tf.summary.image('decoder/reconstructions', reconstructions, collections=['decoder_summaries'])
+                        tf.summary.scalar('decoder/reconstruction_treatment_loss', recon_treatment_loss, collections=['decoder_summaries'])
+                        tf.summary.scalar('decoder/reconstruction_total_loss', total_reconstruction_loss, collections=['decoder_summaries'])
+                        tf.summary.image('decoder/reconstructions', reconstructions_tensor, collections=['decoder_summaries'])
 
                         # Filter visualizations
                         filter_summary = self.__get_weights_as_image(self.feature_extractor.first_layer().weights)
