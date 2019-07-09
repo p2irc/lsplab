@@ -40,7 +40,7 @@ class lsp(object):
     __num_failed_attempts = 0
     __mode = 'longitudinal'
     __random_seed = None
-    __use_batchnorm = False
+    __use_batchnorm = True
 
     __current_fold = None
     __num_folds = None
@@ -1125,17 +1125,19 @@ class lsp(object):
                                 reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions_tensor)), axis=[1, 2, 3])
                                 reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
 
-                                total_reconstruction_loss = tf.reduce_sum([recon_treatment_loss * 0.1, reconstruction_diversity * 0.1, reconstruction_loss])
+                                reconstruction_total_loss = tf.reduce_sum([recon_treatment_loss * 0.1, reconstruction_diversity * 0.1, reconstruction_loss])
 
                                 reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
 
                                 # QQ
                                 #reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, reconstruction_vars)
-                                reconstruction_gradients, _ = self.__get_clipped_gradients(total_reconstruction_loss, reconstruction_vars)
+                                reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_total_loss, reconstruction_vars)
 
                                 all_reconstruction_gradients.append(reconstruction_gradients)
 
-                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost * 100.])
+                                # QQ
+                                #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost * 100.])
+                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost * 100., reconstruction_loss])
 
                                 pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
 
@@ -1248,7 +1250,7 @@ class lsp(object):
                         tf.summary.scalar('decoder/reconstruction_loss_batch_var', reconstruction_var, collections=['decoder_summaries'])
                         tf.summary.scalar('decoder/reconstruction_diversity', reconstruction_diversity, collections=['decoder_summaries'])
                         tf.summary.scalar('decoder/reconstruction_treatment_loss', recon_treatment_loss, collections=['decoder_summaries'])
-                        tf.summary.scalar('decoder/reconstruction_total_loss', total_reconstruction_loss, collections=['decoder_summaries'])
+                        tf.summary.scalar('decoder/reconstruction_total_loss', reconstruction_total_loss, collections=['decoder_summaries'])
                         tf.summary.image('decoder/reconstructions', reconstructions_tensor, collections=['decoder_summaries'])
 
                         # Filter visualizations
@@ -1281,7 +1283,9 @@ class lsp(object):
 
                         self.load_state()
                     else:
-                        pretrain_succeeded = self.__pretrain(pretrain_objective, treatment_loss, treatment_loss_test)
+                        # QQ
+                        #pretrain_succeeded = self.__pretrain(pretrain_objective, treatment_loss, treatment_loss_test)
+                        pretrain_succeeded = self.__train_joint(pretrain_objective, reconstruction_objective, treatment_loss, treatment_loss_test, reconstruction_total_loss)
 
                         self.__log('Pretraining finished.')
 
@@ -1320,8 +1324,8 @@ class lsp(object):
 
                             if self.__current_fold == 0:
                                 # Train and test the decoder
-                                self.__log('Training decoder...')
-                                self.__train_decoder(reconstruction_objective, reconstruction_loss)
+                                #self.__log('Training decoder...')
+                                #self.__train_decoder(reconstruction_objective, reconstruction_loss)
 
                                 if decoder_vis:
                                     self.__log('Testing decoder...')
@@ -1365,7 +1369,8 @@ class lsp(object):
 
                         if (self.__current_fold + 1) == self.__num_folds:
                             # Load the decoder back up
-                            self.__load_decoder()
+                            # QQ
+                            #self.__load_decoder()
 
                             # Compute all geodesics
                             geo_pheno = self.__get_geodesics_for_all_projections()
@@ -1482,6 +1487,66 @@ class lsp(object):
                 self.__session.run([train_op])
                 elapsed = time.time() - start_time
                 samples_per_sec = (self.__batch_size / elapsed) * self.__num_gpus
+
+    def __train_joint(self, pretrain_op, decoder_train_op, pretrain_loss_op, test_loss_op, decoder_loss_op):
+        self.__log('Starting embedding learning...')
+
+        samples_per_sec = 0.
+        pretrain_iter = 50
+        decoder_iter = 50
+
+        if self.__current_fold > 0:
+            self.__load_decoder()
+
+        # Needed for batch norm
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        pretrain_op = tf.group([pretrain_op, update_ops])
+
+        t = trange(self.__pretraining_batches / (pretrain_iter + decoder_iter))
+
+        for i in t:
+            for j in range(pretrain_iter):
+                if j == pretrain_iter - 1:
+                    if self.__tb_file is not None:
+                        _, batch_loss, summary = self.__session.run([pretrain_op, pretrain_loss_op, self.__pretraining_summaries])
+                        self.__tb_writer.add_summary(summary, i)
+                        self.__tb_writer.flush()
+                    else:
+                        _, batch_loss = self.__session.run([pretrain_op, pretrain_loss_op])
+
+                    t.set_description('EMBEDDING - Batch {}: Loss {:.3f}, samples/sec: {:.2f}'.format(i, batch_loss, samples_per_sec))
+                    t.refresh()
+                else:
+                    start_time = time.time()
+                    self.__session.run([pretrain_op])
+                    elapsed = time.time() - start_time
+                    samples_per_sec = (self.__batch_size / elapsed) * self.__num_gpus
+
+            if self.__current_fold == 0:
+                for j in range(decoder_iter):
+                    if j == decoder_iter - 1:
+                        if self.__tb_file is not None:
+                            _, batch_loss, summary = self.__session.run([decoder_train_op, decoder_loss_op, self.__decoder_summaries])
+                            self.__tb_writer.add_summary(summary, i)
+                            self.__tb_writer.flush()
+                        else:
+                            _, batch_loss = self.__session.run([decoder_train_op, decoder_loss_op])
+
+                        t.set_description(
+                            'DECODER - Batch {}: Loss {:.3f}, samples/sec: {:.2f}'.format(i, batch_loss, samples_per_sec))
+                        t.refresh()
+                    else:
+                        start_time = time.time()
+                        self.__session.run([decoder_train_op])
+                        elapsed = time.time() - start_time
+                        samples_per_sec = (self.__batch_size / elapsed) * self.__num_gpus
+
+        # Use the mean loss from 4 test batches to determine training success
+        test_loss = np.mean([self.__session.run(test_loss_op) for x in range(4)])
+
+        self.__log('Test loss: {0}'.format(test_loss))
+
+        return test_loss <= self.__pretrain_convergence_thresh_upper
 
     def __test_decoder(self, decoder_ops, test_image_ops):
         plotter.make_directory(os.path.join(self.results_path, 'decoder'))
