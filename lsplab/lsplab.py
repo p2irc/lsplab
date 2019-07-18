@@ -30,7 +30,7 @@ class lsp(object):
     __batch_size = None
     __report_rate = None
     __loss_function = 'sce'
-    __decoder_activation= 'linear'
+    __decoder_activation= 'tanh'
     __image_depth = 3
     __num_fold_restarts = 10
     __num_failed_attempts = 0
@@ -58,7 +58,7 @@ class lsp(object):
     # Image options stuff
     __do_augmentation = False
     __do_crop = False
-    __crop_amount = 0.75
+    __crop_amount = 1.
     __standardize_images = True
 
     # Dataset info
@@ -228,7 +228,7 @@ class lsp(object):
     def set_augmentation(self, aug):
         self.__do_augmentation = aug
 
-    def set_cropping_augmentation(self, do_crop, crop_amount=0.75):
+    def set_cropping_augmentation(self, do_crop, crop_amount=0.85):
         self.__do_crop = do_crop
         self.__crop_amount = crop_amount
 
@@ -338,7 +338,7 @@ class lsp(object):
 
                     return (img - mean) / adjusted_stddev
 
-                image = tf.map_fn(lambda x: standardize(x), image)
+                image = tf.map_fn(lambda x: standardize(x), image, parallel_iterations=self.__batch_size)
 
                 return image
             else:
@@ -903,10 +903,7 @@ class lsp(object):
                         # Build the CNN for feature extraction
                         self.feature_extractor = cnn.cnn(debug=self.__debug, batch_size=self.__batch_size)
 
-                        if self.__do_crop:
-                            self.feature_extractor.set_image_dimensions(int(self.__image_height * self.__crop_amount), int(self.__image_width  * self.__crop_amount), self.__image_depth)
-                        else:
-                            self.feature_extractor.set_image_dimensions(self.__image_height, self.__image_width, self.__image_depth)
+                        self.feature_extractor.set_image_dimensions(int(self.__image_height * self.__crop_amount), int(self.__image_width  * self.__crop_amount), self.__image_depth)
 
                         self.__build_convnet()
                         self.feature_extractor.send_ops_to_graph(self.__graph)
@@ -1005,20 +1002,20 @@ class lsp(object):
                                 if self.__decoder_activation == 'tanh':
                                     recon_predicted_treatment, _ = self.lstm.forward_pass([
                                                                                               self.feature_extractor.forward_pass(
-                                                                                                  self.__apply_image_standardization(
                                                                                                   tf.image.resize_images(
                                                                                                       image, [
-                                                                                                          self.__image_height,
-                                                                                                          self.__image_width]), on_GPU=True))
+                                                                                                          int(self.__image_height * self.__crop_amount),
+                                                                                                          int(self.__image_width * self.__crop_amount)]))
                                                                                                   for image in
                                                                                                   reconstructions])
                                 else:
                                     recon_predicted_treatment, _ = self.lstm.forward_pass([
                                                                                               self.feature_extractor.forward_pass(
+                                                                                                  self.__apply_image_standardization(
                                                                                                   tf.image.resize_images(
                                                                                                       image, [
-                                                                                                          self.__image_height,
-                                                                                                          self.__image_width]))
+                                                                                                          int(self.__image_height * self.__crop_amount),
+                                                                                                          int(self.__image_width * self.__crop_amount)]), on_GPU=True))
                                                                                               for image in
                                                                                               reconstructions])
 
