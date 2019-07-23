@@ -30,7 +30,7 @@ class lsp(object):
     __batch_size = None
     __report_rate = None
     __loss_function = 'sce'
-    __decoder_activation= 'tanh'
+    __decoder_activation= 'linear'
     __image_depth = 3
     __num_fold_restarts = 10
     __num_failed_attempts = 0
@@ -317,6 +317,17 @@ class lsp(object):
 
         return image
 
+    def __make_time_cubes(self, embeddings):
+        time_embeddings = []
+
+        for i, emb in enumerate(embeddings):
+            timestamps = [float(i)] * self.__batch_size
+            reemb = tf.concat([emb, tf.expand_dims(timestamps, -1)], axis=1)
+
+            time_embeddings.append(reemb)
+
+        return time_embeddings
+
     def __apply_augmentations(self, image, resized_height, resized_width):
         with self.__graph.device('/cpu:0'):
             if self.__do_augmentation:
@@ -375,7 +386,6 @@ class lsp(object):
     def __save_full_datapoints(self, id, treatment, processed_images):
         """Gets the raw feature vector for all datapoints"""
         with self.__graph.as_default():
-            # CNN embedding for first and last timepoints
             all_embeddings = tf.concat(processed_images, axis=1)
 
             # Append treatment and genotype data
@@ -383,13 +393,13 @@ class lsp(object):
             treatment = tf.expand_dims(tf.cast(treatment, dtype=tf.float32), axis=-1)
             all_features = tf.concat([IID, treatment, all_embeddings], axis=1)
 
-            feature_length = (self.feature_extractor.get_output_size() * len(processed_images)) + 2
+            feature_length = ((self.feature_extractor.get_output_size() + 1) * len(processed_images)) + 2
 
             all_outputs = self.__with_all_datapoints(all_features, [1, feature_length])
 
         temp = np.array(all_outputs)
         head = temp[:, :2]
-        all_outputs_separated = [np.concatenate([head, temp[:, 2+(timestep*self.__n):2+((timestep+1)*self.__n)]], axis=1) for timestep in range(len(processed_images))]
+        all_outputs_separated = [np.concatenate([head, temp[:, 2+(timestep*(self.__n + 1)):2+((timestep+1)*(self.__n + 1))]], axis=1) for timestep in range(len(processed_images))]
 
         all_projections = []
 
@@ -526,7 +536,7 @@ class lsp(object):
     def __build_decoder(self):
         self.__decoder_net.add_input_layer(reshape=True)
 
-        self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, self.__n, 16], stride_length=1, activation_function='relu')
+        self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, self.__n + 1, 16], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=16, upscale_factor=2, activation_function='relu')
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 16, 32], stride_length=1, activation_function='relu')
@@ -597,20 +607,20 @@ class lsp(object):
                                                    self.__decoder_net.forward_pass(embedding_B)))
 
                     # Make static placeholders for the start, end, and all anchors in between
-                    start_point = tf.placeholder(tf.float32, shape=(self.__n))
-                    end_point = tf.placeholder(tf.float32, shape=(self.__n))
+                    start_point = tf.placeholder(tf.float32, shape=(self.__n + 1))
+                    end_point = tf.placeholder(tf.float32, shape=(self.__n + 1))
 
                     self.__geodesic_placeholder_A.append(start_point)
                     self.__geodesic_placeholder_B.append(end_point)
 
                     if self.__mode == 'longitudinal':
-                        anchor_points = [tf.placeholder(tf.float32, shape=(self.__n)) for i in range(self.__num_timepoints - 2)]
+                        anchor_points = [tf.placeholder(tf.float32, shape=(self.__n + 1)) for i in range(self.__num_timepoints - 2)]
                         self.__geodesic_anchor_points.append(anchor_points)
 
                         if self.__geodesic_num_interpolations > 0:
-                            interpolated_points = [tf.Variable(tf.zeros([self.__n]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations * (self.__num_timepoints - 1))]
+                            interpolated_points = [tf.Variable(tf.zeros([self.__n + 1]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations * (self.__num_timepoints - 1))]
                     elif self.__mode == 'cross sectional':
-                        interpolated_points = [tf.Variable(tf.zeros([self.__n]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations)]
+                        interpolated_points = [tf.Variable(tf.zeros([self.__n + 1]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations)]
 
                     if self.__geodesic_num_interpolations > 0:
                         self.__geodesic_interpolated_points.append(interpolated_points)
@@ -913,7 +923,7 @@ class lsp(object):
 
                     with tf.variable_scope('decoder'):
                         self.__decoder_net = cnn.cnn(debug=True, batch_size=self.__batch_size, name_prefix="decoder-")
-                        self.__decoder_net.set_image_dimensions(1, 1, self.__n)
+                        self.__decoder_net.set_image_dimensions(1, 1, self.__n + 1)
 
                         self.__build_decoder()
 
@@ -925,6 +935,7 @@ class lsp(object):
                     for d in range(num_gpus):
                         with tf.device('/device:GPU:{0}'.format(d)):
                             with tf.name_scope('gpu_%d_' % (d)) as scope:
+
                                 # --- Components for training ---
 
                                 # Graph inputs
@@ -949,6 +960,12 @@ class lsp(object):
                                     emb = self.feature_extractor.forward_pass(image)
                                     cnn_embeddings.append(emb)
 
+                                # QQ
+                                predicted_treatment, embeddings = self.lstm.forward_pass(cnn_embeddings)
+                                #predicted_treatment, _ = self.lstm.forward_pass(cnn_embeddings)
+
+                                # Embed unaugmented images for the reconstruction
+
                                 unaugmented_cnn_embeddings = []
                                 recon_targets = []
 
@@ -963,7 +980,16 @@ class lsp(object):
                                     if self.__decoder_activation == 'tanh':
                                         recon_targets.append(image)
 
+                                # QQ
                                 _, unaugmented_embeddings = self.lstm.forward_pass(unaugmented_cnn_embeddings)
+
+                                # Add time by naming the embeddings into cubes
+
+                                # QQ
+                                #cnn_time_embeddings = self.__make_time_cubes(unaugmented_cnn_embeddings)
+                                time_embeddings = self.__make_time_cubes(unaugmented_embeddings)
+
+                                # Determinant loss
 
                                 all_emb = tf.concat(cnn_embeddings, 0)
                                 avg = tf.reduce_mean(all_emb, axis=0)
@@ -976,15 +1002,15 @@ class lsp(object):
                                 # Determinant of the covariance matrix
                                 emb_cost = tf.linalg.det(cov)
 
-                                predicted_treatment, embeddings = self.lstm.forward_pass(cnn_embeddings)
-
                                 treatment_loss = self.__get_treatment_loss(treatment, predicted_treatment)
 
                                 cnn_reg_loss = self.feature_extractor.get_regularization_loss()
                                 lstm_reg_loss = self.lstm.get_regularization_loss()
 
                                 # Decoder takes the output from the latent space encoder and tries to reconstruct the input
-                                reconstructions = [self.__decoder_net.forward_pass(emb) for emb in unaugmented_embeddings]
+                                # QQ
+                                #reconstructions = [self.__decoder_net.forward_pass(emb) for emb in cnn_time_embeddings]
+                                reconstructions = [self.__decoder_net.forward_pass(emb) for emb in time_embeddings]
                                 reconstructions_tensor = tf.concat(reconstructions, axis=0)
 
                                 decoder_out = self.__decoder_net.layers[-1].output_size
@@ -1062,7 +1088,10 @@ class lsp(object):
 
                         processed_images_ti.append(self.feature_extractor.forward_pass(image, deterministic=True))
 
+                    # QQ
                     _, processed_images_ti = self.lstm.forward_pass(processed_images_ti)
+
+                    processed_image_cubes_ti = self.__make_time_cubes(processed_images_ti)
 
                     # Test (embedding) set
                     batch_data_test = self.__input_batch_test
@@ -1079,7 +1108,9 @@ class lsp(object):
 
                         processed_images_test.append(self.feature_extractor.forward_pass(image, deterministic=True))
 
+                    # QQ
                     predicted_treatment_test, processed_emb_test = self.lstm.forward_pass(processed_images_test)
+                    #predicted_treatment_test, _ = self.lstm.forward_pass(processed_images_test)
 
                     treatment_loss_test = self.__get_treatment_loss(treatment_test, predicted_treatment_test)
 
@@ -1098,9 +1129,13 @@ class lsp(object):
                         saliency_result = self.feature_extractor.forward_pass(saliency_image_resized)
 
                     if self.__decoder_activation == 'tanh':
-                        decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in processed_emb_test]
+                        # QQ
+                        #decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in self.__make_time_cubes(processed_images_test)]
+                        decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in self.__make_time_cubes(processed_emb_test)]
                     else:
-                        decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in processed_emb_test]
+                        # QQ
+                        #decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in self.__make_time_cubes(processed_images_test)]
+                        decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in self.__make_time_cubes(processed_emb_test)]
 
                     # Aggregate tensorboard summaries
                     if tensorboard is not None:
@@ -1156,7 +1191,7 @@ class lsp(object):
                             self.__test_decoder(decoder_test_vec, image_data_test)
 
                         self.__log('Saving projections...')
-                        self.__save_full_datapoints(id_ti, treatment_ti, processed_images_ti)
+                        self.__save_full_datapoints(id_ti, treatment_ti, processed_image_cubes_ti)
 
                         self.__log('Calculating geodesic distances...')
 
