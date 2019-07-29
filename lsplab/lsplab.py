@@ -99,6 +99,7 @@ class lsp(object):
 
     # Results
     __all_projections = []
+    __current_projections = []
     __geo_pheno = []
     __total_treated_skipped = 0
     __features = None
@@ -875,6 +876,8 @@ class lsp(object):
         self.__num_gpus = num_gpus
         self.__num_threads = num_threads
 
+        self.__current_projections = []
+
         self.__make_directory(self.results_path)
 
         self.__log('Using {0} GPUs and {1} CPU threads'.format(self.__num_gpus, self.__num_threads))
@@ -961,8 +964,8 @@ class lsp(object):
                                     cnn_embeddings.append(emb)
 
                                 # QQ
-                                predicted_treatment, embeddings = self.lstm.forward_pass(cnn_embeddings)
-                                #predicted_treatment, _ = self.lstm.forward_pass(cnn_embeddings)
+                                #predicted_treatment, embeddings = self.lstm.forward_pass(cnn_embeddings)
+                                predicted_treatment, _ = self.lstm.forward_pass(cnn_embeddings)
 
                                 # Embed unaugmented images for the reconstruction
 
@@ -981,13 +984,13 @@ class lsp(object):
                                         recon_targets.append(image)
 
                                 # QQ
-                                _, unaugmented_embeddings = self.lstm.forward_pass(unaugmented_cnn_embeddings)
+                                #_, unaugmented_embeddings = self.lstm.forward_pass(unaugmented_cnn_embeddings)
 
                                 # Add time by naming the embeddings into cubes
 
                                 # QQ
-                                #cnn_time_embeddings = self.__make_time_cubes(unaugmented_cnn_embeddings)
-                                time_embeddings = self.__make_time_cubes(unaugmented_embeddings)
+                                cnn_time_embeddings = self.__make_time_cubes(unaugmented_cnn_embeddings)
+                                #time_embeddings = self.__make_time_cubes(unaugmented_embeddings)
 
                                 # Determinant loss
 
@@ -1009,8 +1012,8 @@ class lsp(object):
 
                                 # Decoder takes the output from the latent space encoder and tries to reconstruct the input
                                 # QQ
-                                #reconstructions = [self.__decoder_net.forward_pass(emb) for emb in cnn_time_embeddings]
-                                reconstructions = [self.__decoder_net.forward_pass(emb) for emb in time_embeddings]
+                                reconstructions = [self.__decoder_net.forward_pass(emb) for emb in cnn_time_embeddings]
+                                #reconstructions = [self.__decoder_net.forward_pass(emb) for emb in time_embeddings]
                                 reconstructions_tensor = tf.concat(reconstructions, axis=0)
 
                                 decoder_out = self.__decoder_net.layers[-1].output_size
@@ -1055,7 +1058,9 @@ class lsp(object):
 
                                 all_reconstruction_gradients.append(reconstruction_gradients)
 
-                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
+                                # QQ
+                                #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
+                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss])
 
                                 pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
 
@@ -1089,7 +1094,7 @@ class lsp(object):
                         processed_images_ti.append(self.feature_extractor.forward_pass(image, deterministic=True))
 
                     # QQ
-                    _, processed_images_ti = self.lstm.forward_pass(processed_images_ti)
+                    #_, processed_images_ti = self.lstm.forward_pass(processed_images_ti)
 
                     processed_image_cubes_ti = self.__make_time_cubes(processed_images_ti)
 
@@ -1109,8 +1114,8 @@ class lsp(object):
                         processed_images_test.append(self.feature_extractor.forward_pass(image, deterministic=True))
 
                     # QQ
-                    predicted_treatment_test, processed_emb_test = self.lstm.forward_pass(processed_images_test)
-                    #predicted_treatment_test, _ = self.lstm.forward_pass(processed_images_test)
+                    #predicted_treatment_test, processed_emb_test = self.lstm.forward_pass(processed_images_test)
+                    predicted_treatment_test, _ = self.lstm.forward_pass(processed_images_test)
 
                     treatment_loss_test = self.__get_treatment_loss(treatment_test, predicted_treatment_test)
 
@@ -1130,12 +1135,12 @@ class lsp(object):
 
                     if self.__decoder_activation == 'tanh':
                         # QQ
-                        #decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in self.__make_time_cubes(processed_images_test)]
-                        decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in self.__make_time_cubes(processed_emb_test)]
+                        decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in self.__make_time_cubes(processed_images_test)]
+                        #decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in self.__make_time_cubes(processed_emb_test)]
                     else:
                         # QQ
-                        #decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in self.__make_time_cubes(processed_images_test)]
-                        decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in self.__make_time_cubes(processed_emb_test)]
+                        decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in self.__make_time_cubes(processed_images_test)]
+                        #decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in self.__make_time_cubes(processed_emb_test)]
 
                     # Aggregate tensorboard summaries
                     if tensorboard is not None:
@@ -1196,7 +1201,25 @@ class lsp(object):
                         self.__log('Calculating geodesic distances...')
 
                         # Save geodesic distances for this fold
-                        self.__geo_pheno.extend(self.__get_geodesics_for_all_projections())
+                        self.__current_projections = self.__get_geodesics_for_all_projections()
+                        self.__geo_pheno.extend(self.__current_projections)
+
+                        # QQ
+                        # Save a trait histogram for just this fold
+                        self.__log('Writing trait value plot...')
+
+                        df = pd.DataFrame(self.__current_projections)
+                        df.columns = ['genotype', 'treatment', 'geodesic']
+
+                        bins = np.linspace(np.amin(df['geodesic'].tolist()), np.amax(df['geodesic'].tolist()), 100)
+                        treated = df.loc[df['treatment'] == 1, 'geodesic'].tolist()
+                        untreated = df.loc[df['treatment'] == 0, 'geodesic'].tolist()
+
+                        plt.clf()
+                        plt.hist(treated, bins, alpha=0.5, label='treated')
+                        plt.hist(untreated, bins, alpha=0.5, label='control')
+                        plt.legend(loc='upper right')
+                        plt.savefig(os.path.join(self.results_path, 'trait-histogram-fold{0}.png'.format(self.__current_fold)))
 
                         # Ordination plots
                         if ordination_vis:
