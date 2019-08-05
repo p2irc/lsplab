@@ -48,6 +48,7 @@ class lsp(object):
     __major_queue_capacity = 64
 
     __main_lr = 0.001
+    __decoder_lr = 0.0001
     __global_weight_decay = 0.0001
     __global_reg = 0.0005
     __variance_constant = 0.2
@@ -447,6 +448,20 @@ class lsp(object):
 
         return tf.reduce_mean(losses)
 
+    def __get_va_loss(self, emb, treatments, flag):
+        all_kld = []
+
+        for time_point in emb:
+            f_emb = tf.boolean_mask(time_point, tf.equal(treatments, flag))
+
+            mu, log_var = tf.nn.moments(f_emb, axes=[1])
+
+            loss = -0.5 * (1 + log_var - tf.square(mu) - tf.exp(log_var))
+
+            all_kld.append(loss)
+
+        return tf.reduce_mean(all_kld)
+
     def __get_clipped_gradients(self, loss, vars=None):
         optimizer = tf.train.AdamOptimizer(self.__main_lr)
         #optimizer = tf.contrib.opt.AdamWOptimizer(self.__global_weight_decay, learning_rate=self.__main_lr)
@@ -459,8 +474,8 @@ class lsp(object):
 
         return capped_gvs, optimizer
 
-    def __apply_gradients(self, gradients):
-        optimizer = tf.train.AdamOptimizer(self.__main_lr)
+    def __apply_gradients(self, gradients, lr):
+        optimizer = tf.train.AdamOptimizer(lr)
         #optimizer = tf.contrib.opt.AdamWOptimizer(self.__global_weight_decay, learning_rate=self.__main_lr)
         objective = optimizer.apply_gradients(gradients)
 
@@ -659,7 +674,7 @@ class lsp(object):
 
                         gradients, optimizer = self.__get_clipped_gradients(ms_dist, interpolated_points)
                         self.__geodesic_optimizers.append(optimizer)
-                        self.__geodesic_objectives.append(self.__apply_gradients(gradients))
+                        self.__geodesic_objectives.append(self.__apply_gradients(gradients, self.__main_lr))
 
         if self.__geodesic_num_interpolations > 0:
             # Collect all of the optimizer variables we have to re-inititalize
@@ -1007,8 +1022,13 @@ class lsp(object):
 
                                 treatment_loss = self.__get_treatment_loss(treatment, predicted_treatment)
 
+                                # Regularization costs
                                 cnn_reg_loss = self.feature_extractor.get_regularization_loss()
                                 lstm_reg_loss = self.lstm.get_regularization_loss()
+
+                                # VE loss
+                                ve_loss_treated = self.__get_va_loss(cnn_embeddings, treatment, 1)
+                                ve_loss_control = self.__get_va_loss(cnn_embeddings, treatment, 0)
 
                                 # Decoder takes the output from the latent space encoder and tries to reconstruct the input
                                 # QQ
@@ -1060,7 +1080,8 @@ class lsp(object):
 
                                 # QQ
                                 #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
-                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss])
+                                #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss])
+                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, ve_loss_control, ve_loss_treated])
 
                                 pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
 
@@ -1075,9 +1096,9 @@ class lsp(object):
                         average_pretrain_gradients = self.__average_gradients(all_pretrain_gradients)
                         average_reconstruction_gradients = self.__average_gradients(all_reconstruction_gradients)
 
-                    pretrain_objective = self.__apply_gradients(average_pretrain_gradients)
+                    pretrain_objective = self.__apply_gradients(average_pretrain_gradients, self.__main_lr)
 
-                    reconstruction_objective = self.__apply_gradients(average_reconstruction_gradients)
+                    reconstruction_objective = self.__apply_gradients(average_reconstruction_gradients, self.__decoder_lr)
 
                     # Test inorder
                     batch_data_ti = self.__inorder_input_batch_test
@@ -1152,6 +1173,9 @@ class lsp(object):
                         tf.summary.scalar('pretrain/emb_cost', emb_cost, collections=['pretrain_summaries'])
                         tf.summary.histogram('pretrain/predicted_treatment', predicted_treatment, collections=['pretrain_summaries'])
                         [tf.summary.histogram('gradients/%s-gradient' % g[1].name, g[0], collections=['pretrain_summaries']) for g in average_pretrain_gradients]
+
+                        tf.summary.scalar('pretrain/treated_ve_loss', ve_loss_treated, collections=['pretrain_summaries'])
+                        tf.summary.scalar('pretrain/control_ve_loss', ve_loss_control, collections=['pretrain_summaries'])
 
                         tf.summary.scalar('test/treatment_loss', treatment_loss_test, collections=['pretrain_summaries'])
 
