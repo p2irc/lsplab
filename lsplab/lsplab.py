@@ -1070,14 +1070,6 @@ class lsp(object):
 
                                 recon_treatment_loss = self.__get_treatment_loss(treatment, recon_predicted_treatment)
 
-                                reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions_tensor)), axis=[1, 2, 3])
-                                reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
-
-                                reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
-                                reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, reconstruction_vars)
-
-                                all_reconstruction_gradients.append(reconstruction_gradients)
-
                                 # QQ
                                 #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
                                 #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss])
@@ -1087,6 +1079,17 @@ class lsp(object):
 
                                 pretrain_gradients, _ = self.__get_clipped_gradients(pretrain_total_loss, pt_vars)
                                 all_pretrain_gradients.append(pretrain_gradients)
+
+                                reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions_tensor)), axis=[1, 2, 3])
+                                reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
+
+                                # QQ
+                                #reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
+                                #reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, reconstruction_vars)
+                                reconstruction_loss_total = tf.reduce_sum([reconstruction_loss, pretrain_total_loss])
+                                reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss_total)
+
+                                all_reconstruction_gradients.append(reconstruction_gradients)
 
                     # Average gradients and apply
                     if num_gpus == 1:
