@@ -78,8 +78,7 @@ class lsp(object):
 
     # Graph components
     __input_batch_train = None
-    __input_batch_test = None
-    __inorder_input_batch_test = None
+    __inorder_input_batch_train = None
 
     # Subgraph objects
     feature_extractor = None
@@ -100,12 +99,8 @@ class lsp(object):
 
     # Results
     __all_projections = []
-    __current_projections = []
     __geo_pheno = []
     __total_treated_skipped = 0
-    __features = None
-    __p_values = None
-    __key_path = None
     __global_timer = None
 
     def __init__(self, debug, batch_size=8):
@@ -116,10 +111,7 @@ class lsp(object):
 
     def __log(self, message):
         if self.__debug:
-            if self.__current_fold is not None:
-                print('{0}: (Fold {1}) {2}'.format(datetime.datetime.now().strftime("%I:%M%p"), self.__current_fold, message.encode('utf-8')))
-            else:
-                print('{0}: {1}'.format(datetime.datetime.now().strftime("%I:%M%p"), message.encode('utf-8')))
+            print('{0}: {1}'.format(datetime.datetime.now().strftime("%I:%M%p"), message.encode('utf-8')))
 
     def __initialize(self):
         self.__log('Initializing variables...')
@@ -174,6 +166,17 @@ class lsp(object):
             saver = tf.train.Saver(tf.trainable_variables())
             saver.save(self.__session, dir + '/tfhSaved')
 
+    def load_state(self, directory='./saved_state'):
+        """
+        Load all trainable variables from a checkpoint file specified from the load_from_saved parameter in the
+        class constructor.
+        """
+        self.__log('Loading from checkpoint file...')
+
+        with self.__graph.as_default():
+            saver = tf.train.Saver(tf.trainable_variables())
+            saver.restore(self.__session, tf.train.latest_checkpoint(directory))
+
     def __save_decoder(self):
         """Save all trainable variables as a checkpoint in the current working path"""
         self.__log('Saving decoder...')
@@ -194,16 +197,42 @@ class lsp(object):
             saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='decoder'))
             saver.restore(self.__session, tf.train.latest_checkpoint(directory))
 
-    def load_state(self, directory='./saved_state'):
-        """
-        Load all trainable variables from a checkpoint file specified from the load_from_saved parameter in the
-        class constructor.
-        """
-        self.__log('Loading from checkpoint file...')
+    def __save_embeddings(self):
+        def save_metadata(batch_ys, metadata_path):
+            with open(metadata_path, 'w') as f:
+                f.write("Index\tLabel\n")
+                for index, label in enumerate(batch_ys):
+                    if type(label) is int:
+                        f.write("%d\t%d\n" % (index, label))
+                    else:
+                        f.write('\t'.join((str(index), str(label))) + '\n')
 
-        with self.__graph.as_default():
-            saver = tf.train.Saver(tf.trainable_variables())
-            saver.restore(self.__session, tf.train.latest_checkpoint(directory))
+        labels = []
+        feats = []
+
+        for timepoint in self.__all_projections:
+            for datapoint in timepoint:
+                labels.append(int(datapoint[1]))
+                feats.append(datapoint[2])
+
+        labels = np.array(labels)
+        feats = np.array(feats)
+
+        config = tf.contrib.tensorboard.plugins.projector.ProjectorConfig()
+        metadata_path = os.path.join(self.__tb_file, 'metadata.tsv')
+
+        save_metadata(labels, metadata_path)
+
+        emb = tf.Variable(feats, name='embeddings', trainable=False)
+        embedding = config.embeddings.add()
+        embedding.tensor_name = emb.name
+        embedding.metadata_path = metadata_path
+
+        tf.contrib.tensorboard.plugins.projector.visualize_embeddings(self.__tb_writer, config)
+
+        saver = tf.train.Saver(max_to_keep=1)
+        self.__session.run(emb.initializer)
+        saver.save(self.__session, os.path.join(self.__tb_file, 'ckpt'))
 
     def __save_as_image(self, mat, path):
         plt.clf()
@@ -275,25 +304,8 @@ class lsp(object):
 
         self.__cache_files.append(cache_file_path)
 
-        # Input pipelines for testing
-
-        self.__num_records_test = self.__get_num_records(self.__current_test_file)
-        self.__log('Found {0} test records...'.format(self.__num_records_test))
-
-        self.__input_batch_test, init_op_2, _ = \
-            biotools.get_sample_from_tfrecords_shuffled(self.__current_test_file,
-                                                        self.__batch_size,
-                                                        self.__image_height,
-                                                        self.__image_width,
-                                                        self.__image_depth,
-                                                        self.__num_timepoints,
-                                                        queue_capacity=32,
-                                                        num_threads=self.__num_threads,
-                                                        cached=False,
-                                                        in_memory=self.__use_memory_cache)
-
-        self.__inorder_input_batch_test, init_op_3, _ = \
-            biotools.get_sample_from_tfrecords_inorder(self.__current_test_file,
+        self.__inorder_input_batch_train, init_op_2, _ = \
+            biotools.get_sample_from_tfrecords_inorder(self.__current_train_files,
                                                        self.__batch_size,
                                                        self.__image_height,
                                                        self.__image_width,
@@ -304,7 +316,7 @@ class lsp(object):
                                                        cached=False,
                                                        in_memory=self.__use_memory_cache)
 
-        self.__queue_init_ops = [init_op_1, init_op_2, init_op_3]
+        self.__queue_init_ops = [init_op_1, init_op_2]
 
     def __get_num_records(self, records_path):
         self.__log('Counting records in {0}...'.format(records_path))
@@ -319,16 +331,16 @@ class lsp(object):
 
         return image
 
-    def __make_time_cubes(self, embeddings):
-        time_embeddings = []
-
-        for i, emb in enumerate(embeddings):
-            timestamps = [float(i)] * self.__batch_size
-            reemb = tf.concat([emb, tf.expand_dims(timestamps, -1)], axis=1)
-
-            time_embeddings.append(reemb)
-
-        return time_embeddings
+    # def __make_time_cubes(self, embeddings):
+    #     time_embeddings = []
+    #
+    #     for i, emb in enumerate(embeddings):
+    #         timestamps = [float(i)] * self.__batch_size
+    #         reemb = tf.concat([emb, tf.expand_dims(timestamps, -1)], axis=1)
+    #
+    #         time_embeddings.append(reemb)
+    #
+    #     return time_embeddings
 
     def __apply_augmentations(self, image, resized_height, resized_width):
         with self.__graph.device('/cpu:0'):
@@ -362,13 +374,12 @@ class lsp(object):
         else:
             return image
 
-    def __with_all_datapoints(self, op, datapoint_shape, num_records=None):
+    def __with_all_datapoints(self, op, datapoint_shape):
         """Get the results of running an op for all datapoints"""
-        if num_records is None:
-            num_records = self.__num_records_test
+        num_records = self.__get_num_records(self.__current_train_files[0])
 
         total_batches = int(math.ceil(num_records / float(self.__batch_size)))
-        remainder = (total_batches*self.__batch_size) - num_records
+        remainder = (total_batches * self.__batch_size) - num_records
         outputs = np.empty(datapoint_shape)
 
         with self.__graph.as_default():
@@ -395,13 +406,13 @@ class lsp(object):
             treatment = tf.expand_dims(tf.cast(treatment, dtype=tf.float32), axis=-1)
             all_features = tf.concat([IID, treatment, all_embeddings], axis=1)
 
-            feature_length = ((self.feature_extractor.get_output_size() + 1) * len(processed_images)) + 2
+            feature_length = ((self.feature_extractor.get_output_size()) * len(processed_images)) + 2
 
             all_outputs = self.__with_all_datapoints(all_features, [1, feature_length])
 
         temp = np.array(all_outputs)
         head = temp[:, :2]
-        all_outputs_separated = [np.concatenate([head, temp[:, 2+(timestep*(self.__n + 1)):2+((timestep+1)*(self.__n + 1))]], axis=1) for timestep in range(len(processed_images))]
+        all_outputs_separated = [np.concatenate([head, temp[:, 2+(timestep*(self.__n)):2+((timestep+1)*(self.__n))]], axis=1) for timestep in range(len(processed_images))]
 
         all_projections = []
 
@@ -462,8 +473,8 @@ class lsp(object):
 
         return tf.reduce_mean(all_kld)
 
-    def __get_clipped_gradients(self, loss, vars=None):
-        optimizer = tf.train.AdamOptimizer(self.__main_lr)
+    def __get_clipped_gradients(self, loss, lr, vars=None):
+        optimizer = tf.train.AdamOptimizer(lr)
         #optimizer = tf.contrib.opt.AdamWOptimizer(self.__global_weight_decay, learning_rate=self.__main_lr)
         gvs = optimizer.compute_gradients(loss, var_list=vars)
 
@@ -481,8 +492,8 @@ class lsp(object):
 
         return objective
 
-    def __minimize_with_clipped_gradients(self, loss, vars=None):
-        capped_gvs, optimizer = self.__get_clipped_gradients(loss, vars=vars)
+    def __minimize_with_clipped_gradients(self, loss, lr, vars=None):
+        capped_gvs, optimizer = self.__get_clipped_gradients(loss, lr, vars=vars)
         objective = optimizer.apply_gradients(capped_gvs)
 
         return objective, capped_gvs
@@ -527,23 +538,23 @@ class lsp(object):
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, self.__image_depth, 16], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        if self.__use_batchnorm:
-            self.feature_extractor.add_batchnorm_layer()
+        # if self.__use_batchnorm:
+        #     self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 16, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        if self.__use_batchnorm:
-            self.feature_extractor.add_batchnorm_layer()
+        # if self.__use_batchnorm:
+        #     self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        if self.__use_batchnorm:
-            self.feature_extractor.add_batchnorm_layer()
+        # if self.__use_batchnorm:
+        #     self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=2)
-        if self.__use_batchnorm:
-            self.feature_extractor.add_batchnorm_layer()
+        # if self.__use_batchnorm:
+        #     self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_fully_connected_layer(output_size=64, activation_function='relu', regularization_coefficient=self.__global_reg)
 
@@ -552,7 +563,7 @@ class lsp(object):
     def __build_decoder(self):
         self.__decoder_net.add_input_layer(reshape=True)
 
-        self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, self.__n + 1, 16], stride_length=1, activation_function='relu')
+        self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, self.__n, 16], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=16, upscale_factor=2, activation_function='relu')
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 16, 32], stride_length=1, activation_function='relu')
@@ -623,20 +634,20 @@ class lsp(object):
                                                    self.__decoder_net.forward_pass(embedding_B)))
 
                     # Make static placeholders for the start, end, and all anchors in between
-                    start_point = tf.placeholder(tf.float32, shape=(self.__n + 1))
-                    end_point = tf.placeholder(tf.float32, shape=(self.__n + 1))
+                    start_point = tf.placeholder(tf.float32, shape=(self.__n))
+                    end_point = tf.placeholder(tf.float32, shape=(self.__n))
 
                     self.__geodesic_placeholder_A.append(start_point)
                     self.__geodesic_placeholder_B.append(end_point)
 
                     if self.__mode == 'longitudinal':
-                        anchor_points = [tf.placeholder(tf.float32, shape=(self.__n + 1)) for i in range(self.__num_timepoints - 2)]
+                        anchor_points = [tf.placeholder(tf.float32, shape=(self.__n)) for i in range(self.__num_timepoints - 2)]
                         self.__geodesic_anchor_points.append(anchor_points)
 
                         if self.__geodesic_num_interpolations > 0:
-                            interpolated_points = [tf.Variable(tf.zeros([self.__n + 1]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations * (self.__num_timepoints - 1))]
+                            interpolated_points = [tf.Variable(tf.zeros([self.__n]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations * (self.__num_timepoints - 1))]
                     elif self.__mode == 'cross sectional':
-                        interpolated_points = [tf.Variable(tf.zeros([self.__n + 1]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations)]
+                        interpolated_points = [tf.Variable(tf.zeros([self.__n]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations)]
 
                     if self.__geodesic_num_interpolations > 0:
                         self.__geodesic_interpolated_points.append(interpolated_points)
@@ -672,7 +683,7 @@ class lsp(object):
                     if self.__geodesic_num_interpolations > 0:
                         ms_dist = tf.reduce_mean(tf.square(intermediate_distances))
 
-                        gradients, optimizer = self.__get_clipped_gradients(ms_dist, interpolated_points)
+                        gradients, optimizer = self.__get_clipped_gradients(ms_dist, self.__main_lr, interpolated_points)
                         self.__geodesic_optimizers.append(optimizer)
                         self.__geodesic_objectives.append(self.__apply_gradients(gradients, self.__main_lr))
 
@@ -884,447 +895,384 @@ class lsp(object):
         """Begins training"""
 
         self.results_path = './' + os.path.basename(name) + '-results'
-        self.__num_folds = len(self.__record_files)
 
         self.__pretraining_batches = pretraining_batches
         self.__report_rate = report_rate
         self.__num_gpus = num_gpus
         self.__num_threads = num_threads
 
-        self.__current_projections = []
-
         self.__make_directory(self.results_path)
 
         self.__log('Using {0} GPUs and {1} CPU threads'.format(self.__num_gpus, self.__num_threads))
         self.__log('Results will be saved into {0}'.format(self.results_path))
 
-        # Folds control
-        for current_fold in range(self.__num_folds):
-            self.__current_fold = current_fold
-            self.__log('Doing fold {0}'.format(current_fold))
+        self.__current_train_files = self.__record_files
 
-            self.__current_test_file = self.__record_files[current_fold]
-            self.__current_train_files = [f for f in self.__record_files if f != self.__current_test_file]
+        self.__all_projections = [[] for i in range(self.__num_timepoints)]
 
-            self.__all_projections = [[] for i in range(self.__num_timepoints)]
+        if tensorboard is not None:
+            self.__tb_file = os.path.join(tensorboard, '{0}'.format(name))
+        else:
+            self.__tb_file = None
 
-            if tensorboard is not None:
-                self.__tb_file = os.path.join(tensorboard, '{0}_fold{1}'.format(name, self.__current_fold))
-            else:
-                self.__tb_file = None
+        # Failure loop
+        for current_attempt in range(self.__num_fold_restarts):
+            self.__log('This is attempt {0}'.format(current_attempt))
 
-            # Failure loop
-            for current_attempt in range(self.__num_fold_restarts):
-                self.__log('This is attempt {0}'.format(current_attempt))
+            self.__reset_graph()
 
-                self.__reset_graph()
+            # If this isn't the first try, delete the old tensorflow accumulator
+            if tensorboard is not None and current_attempt > 0:
+                shutil.rmtree(self.__tb_file)
 
-                # If this isn't the first try, delete the old tensorflow accumulator
-                if tensorboard is not None and current_attempt > 0:
-                    shutil.rmtree(self.__tb_file)
+            # Gotta add all the shit to the graph again
+            with self.__graph.as_default():
+                self.__initialize_data()
 
-                # Gotta add all the shit to the graph again
-                with self.__graph.as_default():
-                    self.__initialize_data()
+                with tf.variable_scope('pretraining'):
+                    # Build the CNN for feature extraction
+                    self.feature_extractor = cnn.cnn(debug=self.__debug, batch_size=self.__batch_size)
 
-                    with tf.variable_scope('pretraining'):
-                        # Build the CNN for feature extraction
-                        self.feature_extractor = cnn.cnn(debug=self.__debug, batch_size=self.__batch_size)
+                    self.feature_extractor.set_image_dimensions(int(self.__image_height * self.__crop_amount), int(self.__image_width  * self.__crop_amount), self.__image_depth)
 
-                        self.feature_extractor.set_image_dimensions(int(self.__image_height * self.__crop_amount), int(self.__image_width  * self.__crop_amount), self.__image_depth)
+                    self.__build_convnet()
+                    self.feature_extractor.send_ops_to_graph(self.__graph)
 
-                        self.__build_convnet()
-                        self.feature_extractor.send_ops_to_graph(self.__graph)
+                    # Build the LSTM
+                    self.lstm = lstm.lstm(self.__batch_size, self.__n, self.__graph)
 
-                        # Build the LSTM
-                        self.lstm = lstm.lstm(self.__batch_size, self.__n, self.__graph)
+                with tf.variable_scope('decoder'):
+                    self.__decoder_net = cnn.cnn(debug=True, batch_size=self.__batch_size, name_prefix="decoder-")
+                    self.__decoder_net.set_image_dimensions(1, 1, self.__n + 1)
 
-                    with tf.variable_scope('decoder'):
-                        self.__decoder_net = cnn.cnn(debug=True, batch_size=self.__batch_size, name_prefix="decoder-")
-                        self.__decoder_net.set_image_dimensions(1, 1, self.__n + 1)
+                    self.__build_decoder()
 
-                        self.__build_decoder()
+                    self.__decoder_net.send_ops_to_graph(self.__graph)
 
-                        self.__decoder_net.send_ops_to_graph(self.__graph)
+                all_pretrain_gradients = []
+                all_reconstruction_gradients = []
 
-                    all_pretrain_gradients = []
-                    all_reconstruction_gradients = []
+                for d in range(num_gpus):
+                    with tf.device('/device:GPU:{0}'.format(d)):
+                        with tf.name_scope('gpu_%d_' % (d)) as scope:
 
-                    for d in range(num_gpus):
-                        with tf.device('/device:GPU:{0}'.format(d)):
-                            with tf.name_scope('gpu_%d_' % (d)) as scope:
+                            # --- Components for training ---
 
-                                # --- Components for training ---
+                            # Graph inputs
+                            batch_data = self.__input_batch_train
 
-                                # Graph inputs
-                                batch_data = self.__input_batch_train
+                            id, treatment, image_data = self.__parse_batch(batch_data)
 
-                                id, treatment, image_data = self.__parse_batch(batch_data)
+                            # Graph components for main objective
+                            cnn_embeddings = []
 
-                                # Graph components for main objective
-                                cnn_embeddings = []
+                            resized_height = int(self.__image_height * self.__crop_amount)
+                            resized_width = int(self.__image_width * self.__crop_amount)
 
-                                resized_height = int(self.__image_height * self.__crop_amount)
-                                resized_width = int(self.__image_width * self.__crop_amount)
+                            # Embed the images
+                            for image in image_data:
+                                if self.__do_crop:
+                                    image = self.__resize_image(image)
 
-                                # Embed the images
-                                for image in image_data:
-                                    if self.__do_crop:
-                                        image = self.__resize_image(image)
+                                image = self.__apply_image_standardization(image)
+                                image = self.__apply_augmentations(image, resized_height, resized_width)
 
-                                    image = self.__apply_image_standardization(image)
-                                    image = self.__apply_augmentations(image, resized_height, resized_width)
+                                emb = self.feature_extractor.forward_pass(image)
+                                cnn_embeddings.append(emb)
 
-                                    emb = self.feature_extractor.forward_pass(image)
-                                    cnn_embeddings.append(emb)
+                            predicted_treatment, _ = self.lstm.forward_pass(cnn_embeddings)
 
-                                # QQ
-                                #predicted_treatment, embeddings = self.lstm.forward_pass(cnn_embeddings)
-                                predicted_treatment, _ = self.lstm.forward_pass(cnn_embeddings)
+                            # Embed unaugmented images for the reconstruction
 
-                                # Embed unaugmented images for the reconstruction
+                            unaugmented_cnn_embeddings = []
+                            recon_targets = []
 
-                                unaugmented_cnn_embeddings = []
-                                recon_targets = []
+                            for image in image_data:
+                                if self.__do_crop:
+                                    image = self.__resize_image(image)
 
-                                for image in image_data:
-                                    if self.__do_crop:
-                                        image = self.__resize_image(image)
+                                image = self.__apply_image_standardization(image)
 
-                                    image = self.__apply_image_standardization(image)
-
-                                    unaugmented_cnn_embeddings.append(self.feature_extractor.forward_pass(image))
-
-                                    if self.__decoder_activation == 'tanh':
-                                        recon_targets.append(image)
-
-                                # QQ
-                                #_, unaugmented_embeddings = self.lstm.forward_pass(unaugmented_cnn_embeddings)
-
-                                # Add time by naming the embeddings into cubes
-
-                                # QQ
-                                cnn_time_embeddings = self.__make_time_cubes(unaugmented_cnn_embeddings)
-                                #time_embeddings = self.__make_time_cubes(unaugmented_embeddings)
-
-                                # Determinant loss
-
-                                all_emb = tf.concat(cnn_embeddings, 0)
-                                avg = tf.reduce_mean(all_emb, axis=0)
-                                emb_centered = all_emb - avg
-                                cov = tf.matmul(tf.transpose(emb_centered), emb_centered) / (self.__batch_size * self.__num_timepoints)
-
-                                # Add a small epsilon to the diagonal to make sure it's invertible
-                                cov = tf.linalg.set_diag(cov, (tf.linalg.diag_part(cov) + self.__variance_constant))
-
-                                # Determinant of the covariance matrix
-                                emb_cost = tf.linalg.det(cov)
-
-                                treatment_loss = self.__get_treatment_loss(treatment, predicted_treatment)
-
-                                # Regularization costs
-                                cnn_reg_loss = self.feature_extractor.get_regularization_loss()
-                                lstm_reg_loss = self.lstm.get_regularization_loss()
-
-                                # VE loss
-                                ve_loss_treated = self.__get_va_loss(cnn_embeddings, treatment, 1)
-                                ve_loss_control = self.__get_va_loss(cnn_embeddings, treatment, 0)
-
-                                # Decoder takes the output from the latent space encoder and tries to reconstruct the input
-                                # QQ
-                                reconstructions = [self.__decoder_net.forward_pass(emb) for emb in cnn_time_embeddings]
-                                #reconstructions = [self.__decoder_net.forward_pass(emb) for emb in time_embeddings]
-                                reconstructions_tensor = tf.concat(reconstructions, axis=0)
-
-                                decoder_out = self.__decoder_net.layers[-1].output_size
+                                unaugmented_cnn_embeddings.append(self.feature_extractor.forward_pass(image))
 
                                 if self.__decoder_activation == 'tanh':
-                                    original_images = tf.image.resize_images(tf.concat(recon_targets, axis=0), [decoder_out[1], decoder_out[2]])
-                                else:
-                                    original_images = tf.image.resize_images(tf.concat(image_data, axis=0), [decoder_out[1], decoder_out[2]])
+                                    recon_targets.append(image)
 
-                                # A measure of how diverse the reconstructions are
-                                _, rec_var = tf.nn.moments(reconstructions_tensor, axes=[0, 1])
-                                reconstruction_diversity = tf.reduce_mean(rec_var)
+                            # QQ
+                            #cnn_time_embeddings = self.__make_time_cubes(unaugmented_cnn_embeddings)
 
-                                # Cycle loss
-                                if self.__decoder_activation == 'tanh':
-                                    recon_predicted_treatment, _ = self.lstm.forward_pass([
-                                                                                              self.feature_extractor.forward_pass(
-                                                                                                  tf.image.resize_images(
-                                                                                                      image, [
-                                                                                                          int(self.__image_height * self.__crop_amount),
-                                                                                                          int(self.__image_width * self.__crop_amount)]))
-                                                                                                  for image in
-                                                                                                  reconstructions])
-                                else:
-                                    recon_predicted_treatment, _ = self.lstm.forward_pass([
-                                                                                              self.feature_extractor.forward_pass(
-                                                                                                  self.__apply_image_standardization(
-                                                                                                  tf.image.resize_images(
-                                                                                                      image, [
-                                                                                                          int(self.__image_height * self.__crop_amount),
-                                                                                                          int(self.__image_width * self.__crop_amount)]), on_GPU=True))
-                                                                                              for image in
-                                                                                              reconstructions])
+                            # Determinant loss
 
-                                recon_treatment_loss = self.__get_treatment_loss(treatment, recon_predicted_treatment)
+                            all_emb = tf.concat(cnn_embeddings, 0)
+                            avg = tf.reduce_mean(all_emb, axis=0)
+                            emb_centered = all_emb - avg
+                            cov = tf.matmul(tf.transpose(emb_centered), emb_centered) / (self.__batch_size * self.__num_timepoints)
 
-                                # QQ
-                                #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
-                                #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss])
-                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, ve_loss_control, ve_loss_treated])
+                            # Add a small epsilon to the diagonal to make sure it's invertible
+                            cov = tf.linalg.set_diag(cov, (tf.linalg.diag_part(cov) + self.__variance_constant))
 
-                                pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
+                            # Determinant of the covariance matrix
+                            emb_cost = tf.linalg.det(cov)
 
-                                pretrain_gradients, _ = self.__get_clipped_gradients(pretrain_total_loss, pt_vars)
-                                all_pretrain_gradients.append(pretrain_gradients)
+                            treatment_loss = self.__get_treatment_loss(treatment, predicted_treatment)
 
-                                reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions_tensor)), axis=[1, 2, 3])
-                                reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
+                            # Regularization costs
+                            cnn_reg_loss = self.feature_extractor.get_regularization_loss()
+                            lstm_reg_loss = self.lstm.get_regularization_loss()
 
-                                # QQ
-                                #reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
-                                #reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, reconstruction_vars)
-                                reconstruction_loss_total = tf.reduce_sum([reconstruction_loss, pretrain_total_loss])
-                                reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss_total)
+                            # VE loss
+                            ve_loss_treated = self.__get_va_loss(cnn_embeddings, treatment, 1)
+                            ve_loss_control = self.__get_va_loss(cnn_embeddings, treatment, 0)
 
-                                all_reconstruction_gradients.append(reconstruction_gradients)
+                            # Decoder takes the output from the latent space encoder and tries to reconstruct the input
+                            # QQ
+                            reconstructions = [self.__decoder_net.forward_pass(emb) for emb in cnn_embeddings]
+                            #reconstructions = [self.__decoder_net.forward_pass(emb) for emb in cnn_time_embeddings]
+                            reconstructions_tensor = tf.concat(reconstructions, axis=0)
 
-                    # Average gradients and apply
-                    if num_gpus == 1:
-                        average_pretrain_gradients = all_pretrain_gradients[0]
-                        average_reconstruction_gradients = all_reconstruction_gradients[0]
+                            decoder_out = self.__decoder_net.layers[-1].output_size
+
+                            if self.__decoder_activation == 'tanh':
+                                original_images = tf.image.resize_images(tf.concat(recon_targets, axis=0), [decoder_out[1], decoder_out[2]])
+                            else:
+                                original_images = tf.image.resize_images(tf.concat(image_data, axis=0), [decoder_out[1], decoder_out[2]])
+
+                            # A measure of how diverse the reconstructions are
+                            _, rec_var = tf.nn.moments(reconstructions_tensor, axes=[0, 1])
+                            reconstruction_diversity = tf.reduce_mean(rec_var)
+
+                            # Cycle loss
+                            # if self.__decoder_activation == 'tanh':
+                            #     recon_predicted_treatment, _ = self.lstm.forward_pass([
+                            #                                                               self.feature_extractor.forward_pass(
+                            #                                                                   tf.image.resize_images(
+                            #                                                                       image, [
+                            #                                                                           int(self.__image_height * self.__crop_amount),
+                            #                                                                           int(self.__image_width * self.__crop_amount)]))
+                            #                                                                   for image in
+                            #                                                                   reconstructions])
+                            # else:
+                            #     recon_predicted_treatment, _ = self.lstm.forward_pass([
+                            #                                                               self.feature_extractor.forward_pass(
+                            #                                                                   self.__apply_image_standardization(
+                            #                                                                   tf.image.resize_images(
+                            #                                                                       image, [
+                            #                                                                           int(self.__image_height * self.__crop_amount),
+                            #                                                                           int(self.__image_width * self.__crop_amount)]), on_GPU=True))
+                            #                                                               for image in
+                            #                                                               reconstructions])
+                            #
+                            # recon_treatment_loss = self.__get_treatment_loss(treatment, recon_predicted_treatment)
+
+                            # QQ
+                            #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
+                            pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss])
+                            #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, ve_loss_control, ve_loss_treated])
+
+                            pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
+
+                            pretrain_gradients, _ = self.__get_clipped_gradients(pretrain_total_loss, self.__main_lr, pt_vars)
+                            all_pretrain_gradients.append(pretrain_gradients)
+
+                            reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions_tensor)), axis=[1, 2, 3])
+                            reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
+
+                            # QQ
+                            reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
+                            reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, self.__decoder_lr, reconstruction_vars)
+                            #reconstruction_loss_total = tf.reduce_sum([reconstruction_loss, pretrain_total_loss])
+                            #reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss_total, self.__decoder_lr)
+
+                            all_reconstruction_gradients.append(reconstruction_gradients)
+
+                # Average gradients and apply
+                if num_gpus == 1:
+                    average_pretrain_gradients = all_pretrain_gradients[0]
+                    average_reconstruction_gradients = all_reconstruction_gradients[0]
+                else:
+                    average_pretrain_gradients = self.__average_gradients(all_pretrain_gradients)
+                    average_reconstruction_gradients = self.__average_gradients(all_reconstruction_gradients)
+
+                pretrain_objective = self.__apply_gradients(average_pretrain_gradients, self.__main_lr)
+
+                reconstruction_objective = self.__apply_gradients(average_reconstruction_gradients, self.__decoder_lr)
+
+                # Test inorder
+                batch_data_inorder = self.__inorder_input_batch_train
+                id_inorder, treatment_inorder, image_data_inorder = self.__parse_batch(batch_data_inorder)
+
+                cnn_embeddings_inorder = []
+
+                for image in image_data_inorder:
+                    if self.__do_crop:
+                        image = self.__resize_image(image)
+
+                    image = self.__apply_image_standardization(image)
+
+                    cnn_embeddings_inorder.append(self.feature_extractor.forward_pass(image, deterministic=True))
+
+                # Decoder testing
+                if self.__decoder_activation == 'tanh':
+                    # QQ
+                    decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in cnn_embeddings]
+                    # decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in self.__make_time_cubes(processed_emb_test)]
+                else:
+                    # QQ
+                    decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in cnn_embeddings]
+                    # decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in self.__make_time_cubes(processed_emb_test)]
+
+                # Add ops for geodesic calculations
+                self.__build_geodesic_graph()
+
+                # For saliency visualization
+                if saliency_target is not None:
+                    saliency_image = tf.placeholder(tf.float32, shape=(None, self.__image_height, self.__image_width, self.__image_depth))
+
+                    if self.__do_crop:
+                        saliency_image_resized = self.__resize_image(saliency_image)
                     else:
-                        average_pretrain_gradients = self.__average_gradients(all_pretrain_gradients)
-                        average_reconstruction_gradients = self.__average_gradients(all_reconstruction_gradients)
+                        saliency_image_resized = saliency_image
 
-                    pretrain_objective = self.__apply_gradients(average_pretrain_gradients, self.__main_lr)
+                    saliency_result = self.feature_extractor.forward_pass(saliency_image_resized)
 
-                    reconstruction_objective = self.__apply_gradients(average_reconstruction_gradients, self.__decoder_lr)
+                # Aggregate tensorboard summaries
+                if tensorboard is not None:
+                    self.__log('Creating Tensorboard summaries...')
 
-                    # Test inorder
-                    batch_data_ti = self.__inorder_input_batch_test
-                    id_ti, treatment_ti, image_data_ti = self.__parse_batch(batch_data_ti)
+                    tf.summary.scalar('pretrain/treatment_loss', treatment_loss, collections=['pretrain_summaries'])
+                    tf.summary.scalar('pretrain/cnn_reg_loss', cnn_reg_loss, collections=['pretrain_summaries'])
+                    tf.summary.scalar('pretrain/lstm_reg_loss', lstm_reg_loss, collections=['pretrain_summaries'])
+                    tf.summary.scalar('pretrain/emb_cost', emb_cost, collections=['pretrain_summaries'])
+                    tf.summary.histogram('pretrain/predicted_treatment', predicted_treatment, collections=['pretrain_summaries'])
+                    [tf.summary.histogram('gradients/%s-gradient' % g[1].name, g[0], collections=['pretrain_summaries']) for g in average_pretrain_gradients]
 
-                    processed_images_ti = []
+                    tf.summary.scalar('pretrain/treated_ve_loss', ve_loss_treated, collections=['pretrain_summaries'])
+                    tf.summary.scalar('pretrain/control_ve_loss', ve_loss_control, collections=['pretrain_summaries'])
 
-                    for image in image_data_ti:
-                        if self.__do_crop:
-                            image = self.__resize_image(image)
+                    tf.summary.scalar('decoder/reconstruction_loss_batch_mean', reconstruction_loss, collections=['decoder_summaries'])
+                    tf.summary.scalar('decoder/reconstruction_loss_batch_var', reconstruction_var, collections=['decoder_summaries'])
+                    tf.summary.scalar('decoder/reconstruction_diversity', reconstruction_diversity, collections=['decoder_summaries'])
+                    #tf.summary.scalar('decoder/reconstruction_treatment_loss', recon_treatment_loss, collections=['decoder_summaries'])
+                    tf.summary.image('decoder/reconstructions', reconstructions_tensor, collections=['decoder_summaries'])
 
-                        image = self.__apply_image_standardization(image)
+                    # Filter visualizations
+                    filter_summary = self.__get_weights_as_image(self.feature_extractor.first_layer().weights)
+                    tf.summary.image('filters/first', filter_summary, collections=['pretrain_summaries'])
 
-                        processed_images_ti.append(self.feature_extractor.forward_pass(image, deterministic=True))
+                    # Summaries for each layer
+                    for layer in self.feature_extractor.layers:
+                        if isinstance(layer, layers.fullyConnectedLayer) or isinstance(layer, layers.convLayer):
+                            tf.summary.histogram('weights/' + layer.name, layer.weights, collections=['pretrain_summaries'])
+                            tf.summary.histogram('biases/' + layer.name, layer.biases, collections=['pretrain_summaries'])
+                            tf.summary.histogram('activations/' + layer.name, layer.activations, collections=['pretrain_summaries'])
 
-                    # QQ
-                    #_, processed_images_ti = self.lstm.forward_pass(processed_images_ti)
+                    self.__pretraining_summaries = tf.summary.merge_all(key='pretrain_summaries')
+                    self.__decoder_summaries = tf.summary.merge_all(key='decoder_summaries')
+                    self.__tb_writer = tf.summary.FileWriter(self.__tb_file)
 
-                    processed_image_cubes_ti = self.__make_time_cubes(processed_images_ti)
+                # Initialize network and threads
+                self.__initialize()
 
-                    # Test (embedding) set
-                    batch_data_test = self.__input_batch_test
+                # Train the encoder
+                pretrain_succeeded = self.__pretrain(pretrain_objective, treatment_loss)
 
-                    id_test, treatment_test, image_data_test = self.__parse_batch(batch_data_test)
+                self.__log('Training finished.')
 
-                    processed_images_test = []
+                if pretrain_succeeded:
+                    self.__reporter.add('Pretraining fold converged', True)
 
-                    for image in image_data_test:
-                        if self.__do_crop:
-                            image = self.__resize_image(image)
+                    # Train and test the decoder
+                    self.__log('Training decoder...')
+                    self.__train_decoder(reconstruction_objective, reconstruction_loss)
 
-                        image = self.__apply_image_standardization(image)
+                    if decoder_vis:
+                        self.__log('Testing decoder...')
+                        self.__test_decoder(decoder_test_vec, image_data)
 
-                        processed_images_test.append(self.feature_extractor.forward_pass(image, deterministic=True))
+                    self.__log('Saving projections...')
+                    self.__save_full_datapoints(id_inorder, treatment_inorder, cnn_embeddings_inorder)
 
-                    # QQ
-                    #predicted_treatment_test, processed_emb_test = self.lstm.forward_pass(processed_images_test)
-                    predicted_treatment_test, _ = self.lstm.forward_pass(processed_images_test)
+                    self.__log('Calculating geodesic distances...')
 
-                    treatment_loss_test = self.__get_treatment_loss(treatment_test, predicted_treatment_test)
+                    # Save geodesic distances for this fold
+                    self.__current_projections = self.__get_geodesics_for_all_projections()
+                    self.__geo_pheno.extend(self.__current_projections)
 
-                    # Add ops for geodesic calculations
-                    self.__build_geodesic_graph()
+                    # Ordination plots
+                    if ordination_vis:
+                        self.__log('Saving ordination plots...')
+                        self.__make_directory(self.results_path + '/ordination-plots')
 
-                    # For saliency visualization
+                        plotter.plot_general_ordination_plot(self.__all_projections,
+                                                             os.path.join(self.results_path, 'ordination-plots',
+                                                             'general-ordination.png'))
+
+                    self.__log('Process complete, finishing up...')
+
+                    # Saliency visualization
                     if saliency_target is not None:
-                        saliency_image = tf.placeholder(tf.float32, shape=(None, self.__image_height, self.__image_width, self.__image_depth))
+                        self.__log('Outputting saliency figure...')
 
-                        if self.__do_crop:
-                            saliency_image_resized = self.__resize_image(saliency_image)
-                        else:
-                            saliency_image_resized = saliency_image
+                        self.__make_directory(os.path.join(self.results_path, 'saliency'))
 
-                        saliency_result = self.feature_extractor.forward_pass(saliency_image_resized)
+                        def LoadImage(file_path):
+                            im = Image.open(file_path)
+                            im = np.asarray(im)
+                            return im / 127.5 - 1.0
 
-                    if self.__decoder_activation == 'tanh':
-                        # QQ
-                        decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in self.__make_time_cubes(processed_images_test)]
-                        #decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in self.__make_time_cubes(processed_emb_test)]
-                    else:
-                        # QQ
-                        decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in self.__make_time_cubes(processed_images_test)]
-                        #decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in self.__make_time_cubes(processed_emb_test)]
+                        activations = saliency_result
+                        y = tf.norm(activations)
 
-                    # Aggregate tensorboard summaries
-                    if tensorboard is not None:
-                        self.__log('Creating Tensorboard summaries...')
+                        saliency_test_image = LoadImage(saliency_target)
 
-                        tf.summary.scalar('pretrain/treatment_loss', treatment_loss, collections=['pretrain_summaries'])
-                        tf.summary.scalar('pretrain/cnn_reg_loss', cnn_reg_loss, collections=['pretrain_summaries'])
-                        tf.summary.scalar('pretrain/lstm_reg_loss', lstm_reg_loss, collections=['pretrain_summaries'])
-                        tf.summary.scalar('pretrain/emb_cost', emb_cost, collections=['pretrain_summaries'])
-                        tf.summary.histogram('pretrain/predicted_treatment', predicted_treatment, collections=['pretrain_summaries'])
-                        [tf.summary.histogram('gradients/%s-gradient' % g[1].name, g[0], collections=['pretrain_summaries']) for g in average_pretrain_gradients]
+                        gbp = saliency.GuidedBackprop(self.__graph, self.__session, y, saliency_image)
 
-                        tf.summary.scalar('pretrain/treated_ve_loss', ve_loss_treated, collections=['pretrain_summaries'])
-                        tf.summary.scalar('pretrain/control_ve_loss', ve_loss_control, collections=['pretrain_summaries'])
+                        gbp_mask = gbp.GetSmoothedMask(saliency_test_image)
 
-                        tf.summary.scalar('test/treatment_loss', treatment_loss_test, collections=['pretrain_summaries'])
+                        smoothgrad_mask_grayscale = saliency.VisualizeImageGrayscale(gbp_mask)
 
-                        tf.summary.scalar('decoder/reconstruction_loss_batch_mean', reconstruction_loss, collections=['decoder_summaries'])
-                        tf.summary.scalar('decoder/reconstruction_loss_batch_var', reconstruction_var, collections=['decoder_summaries'])
-                        tf.summary.scalar('decoder/reconstruction_diversity', reconstruction_diversity, collections=['decoder_summaries'])
-                        tf.summary.scalar('decoder/reconstruction_treatment_loss', recon_treatment_loss, collections=['decoder_summaries'])
-                        tf.summary.image('decoder/reconstructions', reconstructions_tensor, collections=['decoder_summaries'])
+                        self.__save_as_image(smoothgrad_mask_grayscale, os.path.join(self.results_path, 'saliency', 'saliency.png'))
 
-                        # Filter visualizations
-                        filter_summary = self.__get_weights_as_image(self.feature_extractor.first_layer().weights)
-                        tf.summary.image('filters/first', filter_summary, collections=['pretrain_summaries'])
+                    # Write to disk in .pheno format
+                    df = pd.DataFrame(self.__geo_pheno)
+                    df.columns = ['genotype', 'treatment', 'geodesic']
+                    df.to_csv(os.path.join(self.results_path, name + '-geo.csv'), sep=' ', index=False)
 
-                        # Summaries for each layer
-                        for layer in self.feature_extractor.layers:
-                            if isinstance(layer, layers.fullyConnectedLayer) or isinstance(layer, layers.convLayer):
-                                tf.summary.histogram('weights/' + layer.name, layer.weights, collections=['pretrain_summaries'])
-                                tf.summary.histogram('biases/' + layer.name, layer.biases, collections=['pretrain_summaries'])
-                                tf.summary.histogram('activations/' + layer.name, layer.activations, collections=['pretrain_summaries'])
+                    self.__log('.pheno file saved.')
 
-                        self.__pretraining_summaries = tf.summary.merge_all(key='pretrain_summaries')
-                        self.__decoder_summaries = tf.summary.merge_all(key='decoder_summaries')
-                        self.__tb_writer = tf.summary.FileWriter(self.__tb_file)
+                    # Write a plot of output values
+                    self.__log('Writing trait value plot...')
 
-                    # Initialize network and threads
-                    self.__initialize()
+                    bins = np.linspace(np.amin(df['geodesic'].tolist()), np.amax(df['geodesic'].tolist()), 100)
+                    treated = df.loc[df['treatment'] == 1, 'geodesic'].tolist()
+                    untreated = df.loc[df['treatment'] == 0, 'geodesic'].tolist()
 
-                    # Train the encoder
-                    pretrain_succeeded = self.__pretrain(pretrain_objective, treatment_loss, treatment_loss_test)
+                    plt.clf()
+                    plt.hist(treated, bins, alpha=0.5, label='treated')
+                    plt.hist(untreated, bins, alpha=0.5, label='control')
+                    plt.legend(loc='upper right')
+                    plt.savefig(os.path.join(self.results_path, 'trait-histogram.png'))
 
-                    self.__log('Training finished.')
+                    # Write tensorboard projector summary
+                    self.__save_embeddings()
 
-                    if pretrain_succeeded:
-                        self.__reporter.add('Pretraining fold %d converged' % self.__current_fold, True)
+                    self.__shutdown()
+                    break
+                else:
+                    self.__shutdown()
+                    self.__reset_graph()
 
-                        # Train and test the decoder
-                        self.__log('Training decoder...')
-                        self.__train_decoder(reconstruction_objective, reconstruction_loss)
+                    if current_attempt == self.__num_fold_restarts - 1:
+                        self.__reporter.add('Pretraining did NOT converge', False)
+                        self.__log('Pretraining failed the maximum number of times.')
 
-                        if decoder_vis:
-                            self.__log('Testing decoder...')
-                            self.__test_decoder(decoder_test_vec, image_data_test)
-
-                        self.__log('Saving projections...')
-                        self.__save_full_datapoints(id_ti, treatment_ti, processed_image_cubes_ti)
-
-                        self.__log('Calculating geodesic distances...')
-
-                        # Save geodesic distances for this fold
-                        self.__current_projections = self.__get_geodesics_for_all_projections()
-                        self.__geo_pheno.extend(self.__current_projections)
-
-                        # QQ
-                        # Save a trait histogram for just this fold
-                        self.__log('Writing trait value plot...')
-
-                        df = pd.DataFrame(self.__current_projections)
-                        df.columns = ['genotype', 'treatment', 'geodesic']
-
-                        bins = np.linspace(np.amin(df['geodesic'].tolist()), np.amax(df['geodesic'].tolist()), 100)
-                        treated = df.loc[df['treatment'] == 1, 'geodesic'].tolist()
-                        untreated = df.loc[df['treatment'] == 0, 'geodesic'].tolist()
-
-                        plt.clf()
-                        plt.hist(treated, bins, alpha=0.5, label='treated')
-                        plt.hist(untreated, bins, alpha=0.5, label='control')
-                        plt.legend(loc='upper right')
-                        plt.savefig(os.path.join(self.results_path, 'trait-histogram-fold{0}.png'.format(self.__current_fold)))
-
-                        # Ordination plots
-                        if ordination_vis:
-                            self.__log('Saving ordination plots...')
-                            self.__make_directory(self.results_path + '/ordination-plots')
-
-                            plotter.plot_general_ordination_plot(self.__all_projections,
-                                                                 os.path.join(self.results_path, 'ordination-plots',
-                                                                 'ordination-fold{0}.png'.format(self.__current_fold)))
-
-                        # If we are done all the folds now
-                        if (self.__current_fold + 1) == self.__num_folds:
-                            self.__log('Folds are complete, finishing up...')
-
-                            # Saliency visualization
-                            if saliency_target is not None:
-                                self.__log('Outputting saliency figure...')
-
-                                self.__make_directory(os.path.join(self.results_path, 'saliency'))
-
-                                def LoadImage(file_path):
-                                    im = Image.open(file_path)
-                                    im = np.asarray(im)
-                                    return im / 127.5 - 1.0
-
-                                activations = saliency_result
-                                y = tf.norm(activations)
-
-                                saliency_test_image = LoadImage(saliency_target)
-
-                                gbp = saliency.GuidedBackprop(self.__graph, self.__session, y, saliency_image)
-
-                                gbp_mask = gbp.GetSmoothedMask(saliency_test_image)
-
-                                smoothgrad_mask_grayscale = saliency.VisualizeImageGrayscale(gbp_mask)
-
-                                self.__save_as_image(smoothgrad_mask_grayscale, os.path.join(self.results_path, 'saliency', 'saliency-fold{0}.png'.format(current_fold)))
-
-                            # Write to disk in .pheno format
-                            df = pd.DataFrame(self.__geo_pheno)
-                            df.columns = ['genotype', 'treatment', 'geodesic']
-                            df.to_csv(os.path.join(self.results_path, name + '-geo.csv'), sep=' ', index=False)
-
-                            self.__log('.pheno file saved.')
-
-                            # Write a plot of output values
-                            self.__log('Writing trait value plot...')
-
-                            bins = np.linspace(np.amin(df['geodesic'].tolist()), np.amax(df['geodesic'].tolist()), 100)
-                            treated = df.loc[df['treatment'] == 1, 'geodesic'].tolist()
-                            untreated = df.loc[df['treatment'] == 0, 'geodesic'].tolist()
-
-                            plt.clf()
-                            plt.hist(treated, bins, alpha=0.5, label='treated')
-                            plt.hist(untreated, bins, alpha=0.5, label='control')
-                            plt.legend(loc='upper right')
-                            plt.savefig(os.path.join(self.results_path, 'trait-histogram.png'))
-
+                        self.__log('Could not embed, will terminate here.')
                         self.__shutdown()
-                        break
+                        exit()
                     else:
-                        self.__shutdown()
-                        self.__reset_graph()
-
-                        if current_attempt == self.__num_fold_restarts - 1:
-                            self.__reporter.add('Pretraining fold %d did NOT converge' % self.__current_fold, False)
-                            self.__log('Pretraining failed the maximum number of times.')
-
-                            if self.__current_fold == 0:
-                                self.__log('Could not embed the first fold, will terminate here.')
-                                self.__shutdown()
-                                exit()
-
-                            break
-                        else:
-                            self.__log('Pretraining attempt did not succeed, will try again.')
-                            self.__num_failed_attempts += 1
-                            continue
+                        self.__log('Pretraining attempt did not succeed, will try again.')
+                        self.__num_failed_attempts += 1
+                        continue
 
         self.__log('Sanity checks:')
         self.__reporter.print_all()
@@ -1339,7 +1287,7 @@ class lsp(object):
         self.__log('Total failed pretrain attempts: {0}'.format(self.__num_failed_attempts))
         self.__log('Total population size ultimately used: {0}'.format(len(self.__geo_pheno)))
 
-    def __pretrain(self, pretrain_op, loss_op, test_loss_op):
+    def __pretrain(self, pretrain_op, loss_op):
         self.__log('Starting embedding learning...')
 
         batch_loss = None
@@ -1367,12 +1315,7 @@ class lsp(object):
                 elapsed = time.time() - start_time
                 samples_per_sec = (self.__batch_size / elapsed) * self.__num_gpus
 
-        # Use the mean loss from 4 test batches to determine training success
-        test_loss = np.mean([self.__session.run(test_loss_op) for x in range(4)])
-
-        self.__log('Test loss: {0}'.format(test_loss))
-
-        return test_loss <= self.__pretrain_convergence_thresh_upper
+        return True
 
     def __train_decoder(self, train_op, loss_op):
         samples_per_sec = 0.
@@ -1402,7 +1345,6 @@ class lsp(object):
 
     def __test_decoder(self, decoder_ops, test_image_ops):
         self.__make_directory(os.path.join(self.results_path, 'decoder'))
-        self.__make_directory(os.path.join(self.results_path, 'decoder', 'fold{0}'.format(self.__current_fold)))
 
         test_results = self.__session.run(test_image_ops + decoder_ops)
         test_images = test_results[:self.__num_timepoints]
@@ -1411,10 +1353,10 @@ class lsp(object):
         for i, (test_image, decoder_output) in enumerate(list(zip(test_images, decoder_images))):
             for j in range(self.__batch_size):
                 real = np.squeeze(test_image[j, :, :, :])
-                self.__save_as_image(real, os.path.join(self.results_path, 'decoder', 'fold{0}'.format(self.__current_fold), 'decoder-real-sample{0}-timestep{1}.png'.format(j, i)))
+                self.__save_as_image(real, os.path.join(self.results_path, 'decoder', 'decoder-real-sample{0}-timestep{1}.png'.format(j, i)))
 
                 generated = np.squeeze(decoder_output[j, :, :, :])
-                self.__save_as_image(generated, os.path.join(self.results_path, 'decoder', 'fold{0}'.format(self.__current_fold), 'decoder-generated-sample{0}-timestep{1}.png'.format(j, i)))
+                self.__save_as_image(generated, os.path.join(self.results_path, 'decoder', 'decoder-generated-sample{0}-timestep{1}.png'.format(j, i)))
 
     def __get_weights_as_image(self, kernel, normalize=True):
         """Filter visualization, adapted with permission from https://gist.github.com/kukuruza/03731dc494603ceab0c5"""
