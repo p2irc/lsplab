@@ -538,23 +538,23 @@ class lsp(object):
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, self.__image_depth, 16], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        # if self.__use_batchnorm:
-        #     self.feature_extractor.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 16, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        # if self.__use_batchnorm:
-        #     self.feature_extractor.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        # if self.__use_batchnorm:
-        #     self.feature_extractor.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=2)
-        # if self.__use_batchnorm:
-        #     self.feature_extractor.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_fully_connected_layer(output_size=64, activation_function='relu', regularization_coefficient=self.__global_reg)
 
@@ -1065,8 +1065,8 @@ class lsp(object):
                             # recon_treatment_loss = self.__get_treatment_loss(treatment, recon_predicted_treatment)
 
                             # QQ
-                            #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
-                            pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss])
+                            pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
+                            #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss])
                             #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, ve_loss_control, ve_loss_treated])
 
                             pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
