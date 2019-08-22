@@ -492,7 +492,7 @@ def directory2bgwas(input_filename, output_filename, num_timepoints, timestamp_f
     df_out.to_csv(output_filename, sep=',', header=None, index=False)
 
 
-def filenames2bgwas(dir_path, output_filename, num_timepoints, timestamp_format='%Y-%m-%d %H:%M:%S.%f'):
+def filenames2bgwas(dir_path, output_filename, num_timepoints, timestamp_format='%Y-%m-%d %H:%M:%S.%f', split_on='_'):
     """Converts a directory of images with a csv file of labels into a .bgwas file."""
     df_out = pd.DataFrame()
     uid = 0
@@ -511,7 +511,7 @@ def filenames2bgwas(dir_path, output_filename, num_timepoints, timestamp_format=
         timestamps.append(t)
 
     for filename in all_image_filenames:
-        (IID, timestep, treatment) = filename.split('.')[0].split('_')
+        (IID, timestep, treatment) = filename.split('.')[0].split(split_on)
 
         IID = int(IID)
         timestamp = timestamps[int(timestep)]

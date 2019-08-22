@@ -207,6 +207,8 @@ class lsp(object):
                     else:
                         f.write('\t'.join((str(index), str(label))) + '\n')
 
+        self.__log('Saving tensorboard projections...')
+
         labels = []
         feats = []
 
@@ -458,20 +460,6 @@ class lsp(object):
             losses = self.__linear_loss(treatment_float, vec)
 
         return tf.reduce_mean(losses)
-
-    def __get_va_loss(self, emb, treatments, flag):
-        all_kld = []
-
-        for time_point in emb:
-            f_emb = tf.boolean_mask(time_point, tf.equal(treatments, flag))
-
-            mu, log_var = tf.nn.moments(f_emb, axes=[1])
-
-            loss = -0.5 * (1 + log_var - tf.square(mu) - tf.exp(log_var))
-
-            all_kld.append(loss)
-
-        return tf.reduce_mean(all_kld)
 
     def __get_clipped_gradients(self, loss, lr, vars=None):
         optimizer = tf.train.AdamOptimizer(lr)
@@ -1020,10 +1008,6 @@ class lsp(object):
                             cnn_reg_loss = self.feature_extractor.get_regularization_loss()
                             lstm_reg_loss = self.lstm.get_regularization_loss()
 
-                            # VE loss
-                            ve_loss_treated = self.__get_va_loss(cnn_embeddings, treatment, 1)
-                            ve_loss_control = self.__get_va_loss(cnn_embeddings, treatment, 0)
-
                             # Decoder takes the output from the latent space encoder and tries to reconstruct the input
                             # QQ
                             reconstructions = [self.__decoder_net.forward_pass(emb) for emb in cnn_embeddings]
@@ -1064,10 +1048,7 @@ class lsp(object):
                             #
                             # recon_treatment_loss = self.__get_treatment_loss(treatment, recon_predicted_treatment)
 
-                            # QQ
                             pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
-                            #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss])
-                            #pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, ve_loss_control, ve_loss_treated])
 
                             pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
 
@@ -1080,8 +1061,6 @@ class lsp(object):
                             # QQ
                             reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
                             reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, self.__decoder_lr, reconstruction_vars)
-                            #reconstruction_loss_total = tf.reduce_sum([reconstruction_loss, pretrain_total_loss])
-                            #reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss_total, self.__decoder_lr)
 
                             all_reconstruction_gradients.append(reconstruction_gradients)
 
@@ -1145,9 +1124,6 @@ class lsp(object):
                     tf.summary.scalar('pretrain/emb_cost', emb_cost, collections=['pretrain_summaries'])
                     tf.summary.histogram('pretrain/predicted_treatment', predicted_treatment, collections=['pretrain_summaries'])
                     [tf.summary.histogram('gradients/%s-gradient' % g[1].name, g[0], collections=['pretrain_summaries']) for g in average_pretrain_gradients]
-
-                    tf.summary.scalar('pretrain/treated_ve_loss', ve_loss_treated, collections=['pretrain_summaries'])
-                    tf.summary.scalar('pretrain/control_ve_loss', ve_loss_control, collections=['pretrain_summaries'])
 
                     tf.summary.scalar('decoder/reconstruction_loss_batch_mean', reconstruction_loss, collections=['decoder_summaries'])
                     tf.summary.scalar('decoder/reconstruction_loss_batch_var', reconstruction_var, collections=['decoder_summaries'])
@@ -1254,7 +1230,8 @@ class lsp(object):
                     plt.savefig(os.path.join(self.results_path, 'trait-histogram.png'))
 
                     # Write tensorboard projector summary
-                    self.__save_embeddings()
+                    if self.__tb_file is not None:
+                        self.__save_embeddings()
 
                     self.__shutdown()
                     break
