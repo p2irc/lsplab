@@ -6,16 +6,11 @@ from . import stats
 import matplotlib.pyplot as plt
 from matplotlib import cm
 import numpy as np
-import os
 
 
 new_dim = 2
 alpha = 0.5
 line_width = 0.3
-
-def make_directory(path):
-    if not os.path.isdir(path):
-        os.mkdir(path)
 
 
 def get_colormap(num_timepoints, condition):
@@ -33,8 +28,6 @@ def plot_general_ordination_plot(raw, output_path):
     features = np.array([item for sublist in [[x[2] for x in t] for t in raw] for item in sublist])
 
     treatments = [row[1] for row in raw[0]] * num_timepoints
-
-    make_directory(output_path)
 
     pca = stats.pca()
     pca.train(features, new_dim)
@@ -55,5 +48,5 @@ def plot_general_ordination_plot(raw, output_path):
         else:
             plt.scatter(d[:, 0], d[:, 1], color=colors_control, alpha=alpha)
 
-    plt.savefig('{0}/general_ordination.png'.format(output_path))
+    plt.savefig(output_path)
     plt.close(fig)

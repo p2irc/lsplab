@@ -57,6 +57,8 @@ class convLayer(object):
             activations = tf.nn.relu(activations)
         elif self.__activation_function == 'tanh':
             activations = tf.tanh(activations)
+        elif self.__activation_function == 'sigmoid':
+            activations = tf.sigmoid(activations)
 
         self.activations = activations
 
