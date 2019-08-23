@@ -38,7 +38,6 @@ class lsp(object):
     __random_seed = None
     __use_batchnorm = True
 
-    __current_fold = None
     __num_folds = None
 
     __pretraining_batches = None
@@ -67,6 +66,8 @@ class lsp(object):
     __num_timepoints = None
     __cache_filename = None
     __use_memory_cache = False
+    __current_train_files = None
+    __current_test_file = None
 
     # Graph machinery
     __session = None
@@ -318,7 +319,34 @@ class lsp(object):
                                                        cached=False,
                                                        in_memory=self.__use_memory_cache)
 
-        self.__queue_init_ops = [init_op_1, init_op_2]
+        # Input pipelines for testing
+        self.__input_batch_test, init_op_3, cache_file_path = \
+            biotools.get_sample_from_tfrecords_shuffled(self.__current_test_file,
+                                                        self.__batch_size,
+                                                        self.__image_height,
+                                                        self.__image_width,
+                                                        self.__image_depth,
+                                                        self.__num_timepoints,
+                                                        queue_capacity=self.__major_queue_capacity,
+                                                        num_threads=self.__num_threads,
+                                                        cached=True,
+                                                        in_memory=self.__use_memory_cache)
+
+        self.__cache_files.append(cache_file_path)
+
+        self.__inorder_input_batch_test, init_op_4, _ = \
+            biotools.get_sample_from_tfrecords_inorder(self.__current_test_file,
+                                                       self.__batch_size,
+                                                       self.__image_height,
+                                                       self.__image_width,
+                                                       self.__image_depth,
+                                                       self.__num_timepoints,
+                                                       queue_capacity=32,
+                                                       num_threads=self.__num_threads,
+                                                       cached=False,
+                                                       in_memory=self.__use_memory_cache)
+
+        self.__queue_init_ops = [init_op_1, init_op_2, init_op_3, init_op_4]
 
     def __get_num_records(self, records_path):
         self.__log('Counting records in {0}...'.format(records_path))
@@ -332,17 +360,6 @@ class lsp(object):
             image = tf.image.resize_image_with_crop_or_pad(x, resized_height, resized_width)
 
         return image
-
-    # def __make_time_cubes(self, embeddings):
-    #     time_embeddings = []
-    #
-    #     for i, emb in enumerate(embeddings):
-    #         timestamps = [float(i)] * self.__batch_size
-    #         reemb = tf.concat([emb, tf.expand_dims(timestamps, -1)], axis=1)
-    #
-    #         time_embeddings.append(reemb)
-    #
-    #     return time_embeddings
 
     def __apply_augmentations(self, image, resized_height, resized_width):
         with self.__graph.device('/cpu:0'):
@@ -376,10 +393,8 @@ class lsp(object):
         else:
             return image
 
-    def __with_all_datapoints(self, op, datapoint_shape):
+    def __with_all_datapoints(self, op, datapoint_shape, num_records):
         """Get the results of running an op for all datapoints"""
-        num_records = self.__get_num_records(self.__current_train_files[0])
-
         total_batches = int(math.ceil(num_records / float(self.__batch_size)))
         remainder = (total_batches * self.__batch_size) - num_records
         outputs = np.empty(datapoint_shape)
@@ -398,7 +413,7 @@ class lsp(object):
 
         return outputs
 
-    def __save_full_datapoints(self, id, treatment, processed_images):
+    def __save_full_datapoints(self, id, treatment, processed_images, num_datapoints):
         """Gets the raw feature vector for all datapoints"""
         with self.__graph.as_default():
             all_embeddings = tf.concat(processed_images, axis=1)
@@ -410,7 +425,7 @@ class lsp(object):
 
             feature_length = ((self.feature_extractor.get_output_size()) * len(processed_images)) + 2
 
-            all_outputs = self.__with_all_datapoints(all_features, [1, feature_length])
+            all_outputs = self.__with_all_datapoints(all_features, [1, feature_length], num_datapoints)
 
         temp = np.array(all_outputs)
         head = temp[:, :2]
@@ -894,7 +909,8 @@ class lsp(object):
         self.__log('Using {0} GPUs and {1} CPU threads'.format(self.__num_gpus, self.__num_threads))
         self.__log('Results will be saved into {0}'.format(self.results_path))
 
-        self.__current_train_files = self.__record_files
+        self.__current_test_file = self.__record_files[0]
+        self.__current_train_files = [f for f in self.__record_files if f != self.__current_test_file]
 
         self.__all_projections = [[] for i in range(self.__num_timepoints)]
 
@@ -986,9 +1002,6 @@ class lsp(object):
                                 if self.__decoder_activation == 'tanh':
                                     recon_targets.append(image)
 
-                            # QQ
-                            #cnn_time_embeddings = self.__make_time_cubes(unaugmented_cnn_embeddings)
-
                             # Determinant loss
 
                             all_emb = tf.concat(cnn_embeddings, 0)
@@ -1009,9 +1022,7 @@ class lsp(object):
                             lstm_reg_loss = self.lstm.get_regularization_loss()
 
                             # Decoder takes the output from the latent space encoder and tries to reconstruct the input
-                            # QQ
                             reconstructions = [self.__decoder_net.forward_pass(emb) for emb in cnn_embeddings]
-                            #reconstructions = [self.__decoder_net.forward_pass(emb) for emb in cnn_time_embeddings]
                             reconstructions_tensor = tf.concat(reconstructions, axis=0)
 
                             decoder_out = self.__decoder_net.layers[-1].output_size
@@ -1058,7 +1069,6 @@ class lsp(object):
                             reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions_tensor)), axis=[1, 2, 3])
                             reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
 
-                            # QQ
                             reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
                             reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, self.__decoder_lr, reconstruction_vars)
 
@@ -1076,7 +1086,9 @@ class lsp(object):
 
                 reconstruction_objective = self.__apply_gradients(average_reconstruction_gradients, self.__decoder_lr)
 
-                # Test inorder
+                # --- Components for testing and saving ---
+
+                # Train inorder for saving samples
                 batch_data_inorder = self.__inorder_input_batch_train
                 id_inorder, treatment_inorder, image_data_inorder = self.__parse_batch(batch_data_inorder)
 
@@ -1090,15 +1102,44 @@ class lsp(object):
 
                     cnn_embeddings_inorder.append(self.feature_extractor.forward_pass(image, deterministic=True))
 
+                # Test inorder for saving samples
+                batch_data_test_inorder = self.__inorder_input_batch_test
+                id_test_inorder, treatment_test_inorder, image_data_test_inorder = self.__parse_batch(batch_data_test_inorder)
+
+                cnn_embeddings_test_inorder = []
+
+                for image in image_data_test_inorder:
+                    if self.__do_crop:
+                        image = self.__resize_image(image)
+
+                    image = self.__apply_image_standardization(image)
+
+                    cnn_embeddings_test_inorder.append(self.feature_extractor.forward_pass(image, deterministic=True))
+
+                # Test random for monitoring test loss
+                batch_data_test = self.__input_batch_test
+
+                id_test, treatment_test, image_data_test = self.__parse_batch(batch_data_test)
+
+                processed_images_test = []
+
+                for image in image_data_test:
+                    if self.__do_crop:
+                        image = self.__resize_image(image)
+
+                    image = self.__apply_image_standardization(image)
+
+                    processed_images_test.append(self.feature_extractor.forward_pass(image, deterministic=True))
+
+                predicted_treatment_test, _ = self.lstm.forward_pass(processed_images_test)
+
+                treatment_loss_test = self.__get_treatment_loss(treatment_test, predicted_treatment_test)
+
                 # Decoder testing
                 if self.__decoder_activation == 'tanh':
-                    # QQ
                     decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in cnn_embeddings]
-                    # decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in self.__make_time_cubes(processed_emb_test)]
                 else:
-                    # QQ
                     decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in cnn_embeddings]
-                    # decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in self.__make_time_cubes(processed_emb_test)]
 
                 # Add ops for geodesic calculations
                 self.__build_geodesic_graph()
@@ -1125,6 +1166,8 @@ class lsp(object):
                     tf.summary.histogram('pretrain/predicted_treatment', predicted_treatment, collections=['pretrain_summaries'])
                     [tf.summary.histogram('gradients/%s-gradient' % g[1].name, g[0], collections=['pretrain_summaries']) for g in average_pretrain_gradients]
 
+                    tf.summary.scalar('test/treatment_loss', treatment_loss_test, collections=['pretrain_summaries'])
+
                     tf.summary.scalar('decoder/reconstruction_loss_batch_mean', reconstruction_loss, collections=['decoder_summaries'])
                     tf.summary.scalar('decoder/reconstruction_loss_batch_var', reconstruction_var, collections=['decoder_summaries'])
                     tf.summary.scalar('decoder/reconstruction_diversity', reconstruction_diversity, collections=['decoder_summaries'])
@@ -1150,7 +1193,7 @@ class lsp(object):
                 self.__initialize()
 
                 # Train the encoder
-                pretrain_succeeded = self.__pretrain(pretrain_objective, treatment_loss)
+                pretrain_succeeded = self.__pretrain(pretrain_objective, treatment_loss, treatment_loss_test)
 
                 self.__log('Training finished.')
 
@@ -1165,8 +1208,13 @@ class lsp(object):
                         self.__log('Testing decoder...')
                         self.__test_decoder(decoder_test_vec, image_data)
 
-                    self.__log('Saving projections...')
-                    self.__save_full_datapoints(id_inorder, treatment_inorder, cnn_embeddings_inorder)
+                    self.__log('Saving training samples...')
+                    num_train_samples = sum([self.__get_num_records(x) for x in self.__current_train_files])
+                    self.__save_full_datapoints(id_inorder, treatment_inorder, cnn_embeddings_inorder, num_train_samples)
+
+                    self.__log('Saving testing samples...')
+                    num_test_samples = self.__get_num_records(self.__current_test_file)
+                    self.__save_full_datapoints(id_test_inorder, treatment_test_inorder, cnn_embeddings_test_inorder, num_test_samples)
 
                     self.__log('Calculating geodesic distances...')
 
@@ -1264,7 +1312,7 @@ class lsp(object):
         self.__log('Total failed pretrain attempts: {0}'.format(self.__num_failed_attempts))
         self.__log('Total population size ultimately used: {0}'.format(len(self.__geo_pheno)))
 
-    def __pretrain(self, pretrain_op, loss_op):
+    def __pretrain(self, pretrain_op, loss_op, test_loss_op):
         self.__log('Starting embedding learning...')
 
         batch_loss = None
@@ -1281,6 +1329,7 @@ class lsp(object):
                 if self.__tb_file is not None:
                     _, batch_loss, summary = self.__session.run([pretrain_op, loss_op, self.__pretraining_summaries])
                     self.__tb_writer.add_summary(summary, i)
+                    self.__tb_writer.flush()
                 else:
                     _, batch_loss = self.__session.run([pretrain_op, loss_op])
 
@@ -1292,7 +1341,12 @@ class lsp(object):
                 elapsed = time.time() - start_time
                 samples_per_sec = (self.__batch_size / elapsed) * self.__num_gpus
 
-        return True
+        # Use the mean loss from 4 test batches to determine training success
+        test_loss = np.mean([self.__session.run(test_loss_op) for x in range(4)])
+
+        self.__log('Test loss: {0}'.format(test_loss))
+
+        return test_loss <= self.__pretrain_convergence_thresh_upper
 
     def __train_decoder(self, train_op, loss_op):
         samples_per_sec = 0.
