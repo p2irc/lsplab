@@ -62,7 +62,8 @@ class lsp(object):
     __standardize_images = True
 
     # Dataset info
-    __num_records_test = None
+    __num_train_samples = None
+    __num_test_samples = None
     __num_timepoints = None
     __cache_filename = None
     __use_memory_cache = False
@@ -314,7 +315,7 @@ class lsp(object):
                                                        self.__image_width,
                                                        self.__image_depth,
                                                        self.__num_timepoints,
-                                                       queue_capacity=32,
+                                                       queue_capacity=1,
                                                        num_threads=self.__num_threads,
                                                        cached=False,
                                                        in_memory=self.__use_memory_cache)
@@ -341,7 +342,7 @@ class lsp(object):
                                                        self.__image_width,
                                                        self.__image_depth,
                                                        self.__num_timepoints,
-                                                       queue_capacity=32,
+                                                       queue_capacity=1,
                                                        num_threads=self.__num_threads,
                                                        cached=False,
                                                        in_memory=self.__use_memory_cache)
@@ -894,14 +895,14 @@ class lsp(object):
 
         return ret
 
-    def start(self, pretraining_batches=100, report_rate=80, name='results', tensorboard=None, ordination_vis=False, num_gpus=1, num_threads=1, saliency_target=None, decoder_vis=False):
+    def start(self, pretraining_epochs=10, report_rate=80, name='results', tensorboard=None, ordination_vis=False, num_gpus=1, num_threads=1, saliency_target=None, decoder_vis=False):
         """Begins training"""
 
         self.results_path = './' + os.path.basename(name) + '-results'
 
-        self.__pretraining_batches = pretraining_batches
         self.__report_rate = report_rate
         self.__num_gpus = num_gpus
+        self.__batch_size = self.__batch_size / num_gpus
         self.__num_threads = num_threads
 
         self.__make_directory(self.results_path)
@@ -911,6 +912,14 @@ class lsp(object):
 
         self.__current_test_file = self.__record_files[0]
         self.__current_train_files = [f for f in self.__record_files if f != self.__current_test_file]
+
+        self.__num_train_samples = sum([self.__get_num_records(x) for x in self.__current_train_files])
+        self.__num_test_samples = self.__get_num_records(self.__current_test_file)
+
+        self.__log('Training samples: {0}'.format(self.__num_train_samples))
+        self.__log('Testing samples: {0}'.format(self.__num_test_samples))
+
+        self.__pretraining_batches = (self.__num_train_samples * pretraining_epochs) / (self.__batch_size)
 
         self.__all_projections = [[] for i in range(self.__num_timepoints)]
 
@@ -1015,6 +1024,7 @@ class lsp(object):
                             # Determinant of the covariance matrix
                             emb_cost = tf.linalg.det(cov)
 
+                            # Treatment loss
                             treatment_loss = self.__get_treatment_loss(treatment, predicted_treatment)
 
                             # Regularization costs
@@ -1209,12 +1219,10 @@ class lsp(object):
                         self.__test_decoder(decoder_test_vec, image_data)
 
                     self.__log('Saving training samples...')
-                    num_train_samples = sum([self.__get_num_records(x) for x in self.__current_train_files])
-                    self.__save_full_datapoints(id_inorder, treatment_inorder, cnn_embeddings_inorder, num_train_samples)
+                    self.__save_full_datapoints(id_inorder, treatment_inorder, cnn_embeddings_inorder, self.__num_train_samples)
 
                     self.__log('Saving testing samples...')
-                    num_test_samples = self.__get_num_records(self.__current_test_file)
-                    self.__save_full_datapoints(id_test_inorder, treatment_test_inorder, cnn_embeddings_test_inorder, num_test_samples)
+                    self.__save_full_datapoints(id_test_inorder, treatment_test_inorder, cnn_embeddings_test_inorder, self.__num_test_samples)
 
                     self.__log('Calculating geodesic distances...')
 
