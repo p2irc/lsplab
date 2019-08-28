@@ -224,7 +224,7 @@ class skipConnection(object):
                                    self.input_size,
                                    [1, 1, filters / 2, filters],
                                    2,
-                                   'relu',
+                                   None,
                                    'xavier',
                                    False,
                                    False)
