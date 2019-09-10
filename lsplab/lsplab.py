@@ -9,12 +9,10 @@ from . import layers
 import tensorflow as tf
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression
 from tqdm import trange
 import emoji
 import saliency
 from PIL import Image
-from joblib import load
 import matplotlib.pyplot as plt
 
 import datetime
@@ -23,8 +21,6 @@ import os
 import glob
 import time
 import shutil
-import copy
-import random
 
 
 class lsp(object):
@@ -34,13 +30,14 @@ class lsp(object):
     __batch_size = None
     __report_rate = None
     __loss_function = 'sce'
+    __decoder_activation= 'linear'
     __image_depth = 3
     __num_fold_restarts = 10
     __num_failed_attempts = 0
     __mode = 'longitudinal'
     __random_seed = None
+    __use_batchnorm = True
 
-    __current_fold = None
     __num_folds = None
 
     __pretraining_batches = None
@@ -50,6 +47,7 @@ class lsp(object):
     __major_queue_capacity = 64
 
     __main_lr = 0.001
+    __decoder_lr = 0.0001
     __global_weight_decay = 0.0001
     __global_reg = 0.0005
     __variance_constant = 0.2
@@ -60,14 +58,17 @@ class lsp(object):
     # Image options stuff
     __do_augmentation = False
     __do_crop = False
-    __crop_amount = 0.75
+    __crop_amount = 1.
     __standardize_images = True
 
     # Dataset info
-    __num_records_test = None
+    __num_train_samples = None
+    __num_test_samples = None
     __num_timepoints = None
     __cache_filename = None
     __use_memory_cache = False
+    __current_train_files = None
+    __current_test_file = None
 
     # Graph machinery
     __session = None
@@ -79,24 +80,16 @@ class lsp(object):
 
     # Graph components
     __input_batch_train = None
-    __input_batch_test = None
-    __inorder_input_batch_test = None
+    __inorder_input_batch_train = None
 
     # Subgraph objects
-    transformer_net = None
     feature_extractor = None
     lstm = None
     __decoder_net = None
     __n = 16
-    __decoder_iterations = 30000
-    __geodesic_path_iterations = 400
-    __transformer_iterations = 25000
+    __decoder_iterations = 10000
+    __geodesic_path_iterations = 300
     __target_vertices = 30
-
-    # Inter-space transformation stuff
-    __transformation_method = 'Linear'
-    __input_batch_canonical = None
-    __trans_score_threshold = 0.5
 
     # Tensorboard stuff
     __pretraining_summaries = None
@@ -108,12 +101,8 @@ class lsp(object):
 
     # Results
     __all_projections = []
-    __can_projections = []
-    __num_can_points = None
+    __geo_pheno = []
     __total_treated_skipped = 0
-    __features = None
-    __p_values = None
-    __key_path = None
     __global_timer = None
 
     def __init__(self, debug, batch_size=8):
@@ -124,10 +113,7 @@ class lsp(object):
 
     def __log(self, message):
         if self.__debug:
-            if self.__current_fold is not None:
-                print('{0}: (Fold {1}) {2}'.format(datetime.datetime.now().strftime("%I:%M%p"), self.__current_fold, message.encode('utf-8')))
-            else:
-                print('{0}: {1}'.format(datetime.datetime.now().strftime("%I:%M%p"), message.encode('utf-8')))
+            print('{0}: {1}'.format(datetime.datetime.now().strftime("%I:%M%p"), message.encode('utf-8')))
 
     def __initialize(self):
         self.__log('Initializing variables...')
@@ -164,6 +150,9 @@ class lsp(object):
     def set_random_seed(self, seed):
         self.__random_seed = seed
 
+    def set_use_batchnorm(self, use_batchnorm):
+        self.__use_batchnorm = use_batchnorm
+
     def save_state(self, directory=None):
         """Save all trainable variables as a checkpoint in the current working path"""
         self.__log('Saving parameters...')
@@ -173,12 +162,22 @@ class lsp(object):
         else:
             dir = os.path.join(directory, 'saved_state')
 
-        if not os.path.isdir(dir):
-            os.mkdir(dir)
+        self.__make_directory(dir)
 
         with self.__graph.as_default():
             saver = tf.train.Saver(tf.trainable_variables())
             saver.save(self.__session, dir + '/tfhSaved')
+
+    def load_state(self, directory='./saved_state'):
+        """
+        Load all trainable variables from a checkpoint file specified from the load_from_saved parameter in the
+        class constructor.
+        """
+        self.__log('Loading from checkpoint file...')
+
+        with self.__graph.as_default():
+            saver = tf.train.Saver(tf.trainable_variables())
+            saver.restore(self.__session, tf.train.latest_checkpoint(directory))
 
     def __save_decoder(self):
         """Save all trainable variables as a checkpoint in the current working path"""
@@ -200,31 +199,53 @@ class lsp(object):
             saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='decoder'))
             saver.restore(self.__session, tf.train.latest_checkpoint(directory))
 
-    def load_state(self, directory='./saved_state'):
-        """
-        Load all trainable variables from a checkpoint file specified from the load_from_saved parameter in the
-        class constructor.
-        """
-        self.__log('Loading from checkpoint file...')
+    def __save_embeddings(self):
+        def save_metadata(batch_ys, metadata_path):
+            with open(metadata_path, 'w') as f:
+                f.write("Index\tLabel\n")
+                for index, label in enumerate(batch_ys):
+                    if type(label) is int:
+                        f.write("%d\t%d\n" % (index, label))
+                    else:
+                        f.write('\t'.join((str(index), str(label))) + '\n')
 
-        with self.__graph.as_default():
-            saver = tf.train.Saver(tf.trainable_variables())
-            saver.restore(self.__session, tf.train.latest_checkpoint(directory))
+        self.__log('Saving tensorboard projections...')
+
+        labels = []
+        feats = []
+
+        for timepoint in self.__all_projections:
+            for datapoint in timepoint:
+                labels.append(int(datapoint[1]))
+                feats.append(datapoint[2])
+
+        labels = np.array(labels)
+        feats = np.array(feats)
+
+        config = tf.contrib.tensorboard.plugins.projector.ProjectorConfig()
+        metadata_path = os.path.join(self.__tb_file, 'metadata.tsv')
+
+        save_metadata(labels, metadata_path)
+
+        emb = tf.Variable(feats, name='embeddings', trainable=False)
+        embedding = config.embeddings.add()
+        embedding.tensor_name = emb.name
+        embedding.metadata_path = metadata_path
+
+        tf.contrib.tensorboard.plugins.projector.visualize_embeddings(self.__tb_writer, config)
+
+        saver = tf.train.Saver(max_to_keep=1)
+        self.__session.run(emb.initializer)
+        saver.save(self.__session, os.path.join(self.__tb_file, 'ckpt'))
 
     def __save_as_image(self, mat, path):
         plt.clf()
-        plt.imshow(mat)
+        plt.imshow(mat, cmap='gray', vmin=0., vmax=1.)
         plt.savefig(path)
 
     def set_loss_function(self, lf):
         '''Set the loss function to use'''
         self.__loss_function = lf
-
-    def set_transformation_method(self, m):
-        self.__transformation_method = m
-
-        if m == 'NeuralNet':
-            self.__trans_score_threshold = 20.0
 
     def load_records(self, records_path, image_height, image_width, num_timepoints, image_depth=3):
         """Load records created from the dataset"""
@@ -242,7 +263,7 @@ class lsp(object):
     def set_augmentation(self, aug):
         self.__do_augmentation = aug
 
-    def set_cropping_augmentation(self, do_crop, crop_amount=0.75):
+    def set_cropping_augmentation(self, do_crop, crop_amount=0.85):
         self.__do_crop = do_crop
         self.__crop_amount = crop_amount
 
@@ -271,7 +292,7 @@ class lsp(object):
             self.__log('Invalid mode set, must be longitudinal or cross sectional.')
             exit()
 
-    def __initialize_data(self, can_fold_file):
+    def __initialize_data(self):
         # Input pipelines for training
         self.__input_batch_train, init_op_1, cache_file_path = \
             biotools.get_sample_from_tfrecords_shuffled(self.__current_train_files,
@@ -287,53 +308,46 @@ class lsp(object):
 
         self.__cache_files.append(cache_file_path)
 
+        self.__inorder_input_batch_train, init_op_2, _ = \
+            biotools.get_sample_from_tfrecords_inorder(self.__current_train_files,
+                                                       self.__batch_size,
+                                                       self.__image_height,
+                                                       self.__image_width,
+                                                       self.__image_depth,
+                                                       self.__num_timepoints,
+                                                       queue_capacity=1,
+                                                       num_threads=self.__num_threads,
+                                                       cached=False,
+                                                       in_memory=self.__use_memory_cache)
+
         # Input pipelines for testing
-
-        self.__num_records_test = self.__get_num_records(self.__current_test_file)
-        self.__log('Found {0} test records...'.format(self.__num_records_test))
-
-        self.__input_batch_test, init_op_2, _ = \
+        self.__input_batch_test, init_op_3, cache_file_path = \
             biotools.get_sample_from_tfrecords_shuffled(self.__current_test_file,
                                                         self.__batch_size,
                                                         self.__image_height,
                                                         self.__image_width,
                                                         self.__image_depth,
                                                         self.__num_timepoints,
-                                                        queue_capacity=32,
+                                                        queue_capacity=self.__major_queue_capacity,
                                                         num_threads=self.__num_threads,
-                                                        cached=False,
+                                                        cached=True,
                                                         in_memory=self.__use_memory_cache)
 
-        self.__inorder_input_batch_test, init_op_3, _ = \
+        self.__cache_files.append(cache_file_path)
+
+        self.__inorder_input_batch_test, init_op_4, _ = \
             biotools.get_sample_from_tfrecords_inorder(self.__current_test_file,
                                                        self.__batch_size,
                                                        self.__image_height,
                                                        self.__image_width,
                                                        self.__image_depth,
                                                        self.__num_timepoints,
-                                                       queue_capacity=32,
+                                                       queue_capacity=1,
                                                        num_threads=self.__num_threads,
                                                        cached=False,
                                                        in_memory=self.__use_memory_cache)
 
-        self.__queue_init_ops = [init_op_1, init_op_2, init_op_3]
-
-        # If this isn't the first fold, then also initialize a queue for the canonical points
-        if self.__current_fold != 0:
-            self.__input_batch_canonical, can_init_op, _ = \
-                biotools.get_sample_from_tfrecords_inorder(can_fold_file,
-                                                           self.__batch_size,
-                                                           self.__image_height,
-                                                           self.__image_width,
-                                                           self.__image_depth,
-                                                           self.__num_timepoints,
-                                                           queue_capacity=32,
-                                                           num_threads=self.__num_threads,
-                                                           cached=False,
-                                                           in_memory=self.__use_memory_cache)
-
-            self.__queue_init_ops.append(can_init_op)
-
+        self.__queue_init_ops = [init_op_1, init_op_2, init_op_3, init_op_4]
 
     def __get_num_records(self, records_path):
         self.__log('Counting records in {0}...'.format(records_path))
@@ -360,20 +374,30 @@ class lsp(object):
 
         return image
 
-    def __apply_image_standardization(self, image):
-        with self.__graph.device('/cpu:0'):
-            if self.__standardize_images:
-                image = tf.map_fn(lambda x: tf.image.per_image_standardization(x), image)
+    def __apply_image_standardization(self, image, on_GPU=False):
+        if self.__standardize_images:
+            if on_GPU:
+                def standardize(img):
+                    mean, var = tf.nn.moments(img, axes=[0, 1, 2])
+                    adjusted_stddev = tf.reduce_max([tf.sqrt(var), 1.0 / tf.sqrt(tf.cast(tf.size(img), tf.float32))])
 
-        return image
+                    return (img - mean) / adjusted_stddev
 
-    def __with_all_datapoints(self, op, datapoint_shape, num_records=None):
+                image = tf.map_fn(lambda x: standardize(x), image, parallel_iterations=self.__batch_size)
+
+                return image
+            else:
+                with self.__graph.device('/cpu:0'):
+                        image = tf.map_fn(lambda x: tf.image.per_image_standardization(x), image)
+
+                return image
+        else:
+            return image
+
+    def __with_all_datapoints(self, op, datapoint_shape, num_records):
         """Get the results of running an op for all datapoints"""
-        if num_records is None:
-            num_records = self.__num_records_test
-
         total_batches = int(math.ceil(num_records / float(self.__batch_size)))
-        remainder = (total_batches*self.__batch_size) - num_records
+        remainder = (total_batches * self.__batch_size) - num_records
         outputs = np.empty(datapoint_shape)
 
         with self.__graph.as_default():
@@ -390,10 +414,9 @@ class lsp(object):
 
         return outputs
 
-    def __save_full_datapoints(self, id, treatment, processed_images, canon_matrix=None):
+    def __save_full_datapoints(self, id, treatment, processed_images, num_datapoints):
         """Gets the raw feature vector for all datapoints"""
         with self.__graph.as_default():
-            # CNN embedding for first and last timepoints
             all_embeddings = tf.concat(processed_images, axis=1)
 
             # Append treatment and genotype data
@@ -401,18 +424,13 @@ class lsp(object):
             treatment = tf.expand_dims(tf.cast(treatment, dtype=tf.float32), axis=-1)
             all_features = tf.concat([IID, treatment, all_embeddings], axis=1)
 
-            feature_length = (self.feature_extractor.get_output_size() * len(processed_images)) + 2
+            feature_length = ((self.feature_extractor.get_output_size()) * len(processed_images)) + 2
 
-            all_outputs = self.__with_all_datapoints(all_features, [1, feature_length])
+            all_outputs = self.__with_all_datapoints(all_features, [1, feature_length], num_datapoints)
 
         temp = np.array(all_outputs)
         head = temp[:, :2]
-        all_outputs_separated = [np.concatenate([head, temp[:, 2+(timestep*self.__n):2+((timestep+1)*self.__n)]], axis=1) for timestep in range(len(processed_images))]
-
-        # If this is the canonical fold, save these as canonical points in canonical space
-        if self.__current_fold == 0:
-            self.__can_projections = copy.deepcopy(np.reshape(temp[:, 2:], [-1, self.__n]))
-            self.__num_can_points = self.__num_records_test
+        all_outputs_separated = [np.concatenate([head, temp[:, 2+(timestep*(self.__n)):2+((timestep+1)*(self.__n))]], axis=1) for timestep in range(len(processed_images))]
 
         all_projections = []
 
@@ -428,14 +446,6 @@ class lsp(object):
                 IID = row[0]
                 treatment = row[1]
                 combined_features = row[2:]
-
-                if canon_matrix is not None:
-                    if self.__transformation_method == 'Linear':
-                        org_shape = combined_features.shape
-                        combined_features = canon_matrix.predict(combined_features.reshape((-1, self.feature_extractor.get_output_size())))
-                        combined_features = combined_features.reshape(org_shape)
-                    elif self.__transformation_method == 'NeuralNet':
-                        combined_features = self.__predict_transformed_points(combined_features.reshape((-1, self.__n)))
 
                 all_projections[timestep].append((int(IID), int(treatment), combined_features))
 
@@ -467,23 +477,27 @@ class lsp(object):
 
         return tf.reduce_mean(losses)
 
-    def __get_clipped_gradients(self, loss, vars=None):
-        optimizer = tf.train.AdamOptimizer(self.__main_lr)
+    def __get_clipped_gradients(self, loss, lr, vars=None):
+        optimizer = tf.train.AdamOptimizer(lr)
         #optimizer = tf.contrib.opt.AdamWOptimizer(self.__global_weight_decay, learning_rate=self.__main_lr)
         gvs = optimizer.compute_gradients(loss, var_list=vars)
+
+        # Remove none gradients
+        gvs = [t for t in gvs if t[0] is not None]
+
         capped_gvs = [(tf.clip_by_value(grad, -5., 5.), var) for grad, var in gvs]
 
         return capped_gvs, optimizer
 
-    def __apply_gradients(self, gradients):
-        optimizer = tf.train.AdamOptimizer(self.__main_lr)
+    def __apply_gradients(self, gradients, lr):
+        optimizer = tf.train.AdamOptimizer(lr)
         #optimizer = tf.contrib.opt.AdamWOptimizer(self.__global_weight_decay, learning_rate=self.__main_lr)
         objective = optimizer.apply_gradients(gradients)
 
         return objective
 
-    def __minimize_with_clipped_gradients(self, loss, vars=None):
-        capped_gvs, optimizer = self.__get_clipped_gradients(loss, vars=vars)
+    def __minimize_with_clipped_gradients(self, loss, lr, vars=None):
+        capped_gvs, optimizer = self.__get_clipped_gradients(loss, lr, vars=vars)
         objective = optimizer.apply_gradients(capped_gvs)
 
         return objective, capped_gvs
@@ -522,136 +536,79 @@ class lsp(object):
 
         return id, treatment, image_data
 
-    def __learn_subspace_transform(self, targets, labels):
-        # Train
-        t = trange(self.__transformer_iterations)
-        loss = None
-
-        for i in t:
-            indices = random.sample(range(len(targets)), self.__batch_size)
-            c_batch = np.array([targets[k] for k in indices])
-            c_labels = np.array([labels[k] for k in indices])
-
-            fd = { self.__transformer_batch_pl: c_batch, self.__transformer_labels_pl: c_labels }
-            _, loss = self.__session.run([self.__transformer_obj, self.__transformer_loss], feed_dict=fd)
-
-            t.set_description('Loss: {0}'.format(loss))
-
-        return loss
-
-    def __predict_transformed_points(self, points):
-        pred = self.__transformer_net.forward_pass(tf.cast(points, tf.float32))
-
-        ret = self.__session.run(pred)
-
-        return ret[0]
-
-    def __build_transformer(self):
-        # Define the structure of the netwrok used for subspace transformation
-        self.__transformer_net.add_input_layer()
-
-        self.__transformer_net.add_fully_connected_layer(output_size=(self.__n * 2), activation_function='tanh', regularization_coefficient=self.__global_reg)
-
-        self.__transformer_net.add_output_layer(output_size=self.__n, regularization_coefficient=self.__global_reg)
-
     def __build_convnet(self):
         # Define the structure of the CNN used for feature extraction
         self.feature_extractor.add_input_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, self.__image_depth, 16], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        self.feature_extractor.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 16, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        self.feature_extractor.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        self.feature_extractor.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=2)
-        self.feature_extractor.add_batchnorm_layer()
+        if self.__use_batchnorm:
+            self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_fully_connected_layer(output_size=64, activation_function='relu', regularization_coefficient=self.__global_reg)
 
-        self.feature_extractor.add_output_layer(output_size=self.__n, regularization_coefficient=self.__global_reg)
+        self.feature_extractor.add_output_layer(output_size=self.__n, activation_function=None, regularization_coefficient=self.__global_reg)
 
     def __build_decoder(self):
         self.__decoder_net.add_input_layer(reshape=True)
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, self.__n, 16], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=16, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 16, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=32, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=32, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 64], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 64, 64], stride_length=1,  activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 64, 64], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=64, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 64, 64], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 64, 64], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 64, 64], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=64, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 64, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 32, 16], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=16, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 16, 16], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=16, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
 
         self.__decoder_net.add_convolutional_layer(filter_dimension=[3, 3, 16, 16], stride_length=1, activation_function='relu')
         self.__decoder_net.add_upsampling_layer(filter_size=3, num_filters=16, upscale_factor=2, activation_function='relu')
-        self.__decoder_net.add_batchnorm_layer()
 
-        self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function=None)
-
-    def __find_canonical_transformation(self, processed_images):
-        """Find a linear transformation between the test points projected in
-        canonical space and the test points projected in the current projection space"""
-        with self.__graph.as_default():
-            can_points_can_space = self.__can_projections
-            all_features = tf.concat(processed_images, axis=1)
-
-            feature_length = (self.feature_extractor.get_output_size() * len(processed_images))
-
-            can_points_current_space = self.__with_all_datapoints(all_features, [1, feature_length], num_records=self.__num_can_points)
-
-            # Find a linear transformation between the can points in can space and can points in current space
-            A = can_points_current_space.reshape((-1, self.__n))
-            B = can_points_can_space.reshape((-1, self.__n))
-
-            if self.__transformation_method == 'Linear':
-                lin = LinearRegression()
-                lin.fit(A, B)
-
-                trans_score = lin.score(A, B)
-                trans_succeeded = (trans_score > self.__trans_score_threshold)
-
-                return trans_succeeded, trans_score, lin
-            elif self.__transformation_method == 'NeuralNet':
-                train_loss = self.__learn_subspace_transform(A, B)
-                trans_succeeded = (train_loss < self.__trans_score_threshold)
-                return trans_succeeded, train_loss
+        if self.__decoder_activation == 'tanh':
+            self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function='tanh')
+        elif self.__decoder_activation == 'relu':
+            self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function='relu')
+        elif self.__decoder_activation == 'sigmoid':
+            self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function='sigmoid')
+        else:
+            self.__decoder_net.add_convolutional_layer(filter_dimension=[1, 1, 16, self.__image_depth], stride_length=1, activation_function=None)
 
     def __build_geodesic_graph(self):
         self.__geodesic_path_lengths = []
@@ -696,7 +653,8 @@ class lsp(object):
                     elif self.__mode == 'cross sectional':
                         interpolated_points = [tf.Variable(tf.zeros([self.__n]), name='intermediate-%d' % x) for x in range(self.__geodesic_num_interpolations)]
 
-                    self.__geodesic_interpolated_points.append(interpolated_points)
+                    if self.__geodesic_num_interpolations > 0:
+                        self.__geodesic_interpolated_points.append(interpolated_points)
 
                     # Build the list of distances (losses) between points
                     previous_node = [start_point]
@@ -710,7 +668,7 @@ class lsp(object):
                         if i == total_vertices - 1:
                             # Distance to end point
                             next_node[0] = end_point
-                        elif i % (self.__geodesic_num_interpolations  + 1) == 0:
+                        elif i % (self.__geodesic_num_interpolations + 1) == 0:
                             # Distance to an anchor point
                             next_node[0] = anchor_points[next_anchor]
                             next_anchor = next_anchor + 1
@@ -729,9 +687,9 @@ class lsp(object):
                     if self.__geodesic_num_interpolations > 0:
                         ms_dist = tf.reduce_mean(tf.square(intermediate_distances))
 
-                        gradients, optimizer = self.__get_clipped_gradients(ms_dist, interpolated_points)
+                        gradients, optimizer = self.__get_clipped_gradients(ms_dist, self.__main_lr, interpolated_points)
                         self.__geodesic_optimizers.append(optimizer)
-                        self.__geodesic_objectives.append(self.__apply_gradients(gradients))
+                        self.__geodesic_objectives.append(self.__apply_gradients(gradients, self.__main_lr))
 
         if self.__geodesic_num_interpolations > 0:
             # Collect all of the optimizer variables we have to re-inititalize
@@ -749,7 +707,6 @@ class lsp(object):
 
             # Graph ops for generating the interpolation image sequence by decoding the intermediate points
             self.__geodesic_decoded_intermediate = [[self.__decoder_net.forward_pass(x) for x in d] for d in self.__geodesic_interpolated_points]
-
 
     def __geodesic_distance(self, series, t):
         '''Gets the geodesic distance for a series of points, can do n pairs in parallel where n is the number of gpus'''
@@ -845,8 +802,6 @@ class lsp(object):
             num_rows = len(self.__all_projections[0])
             all_idxs = range(num_rows)
 
-            self.__log('Calculating geodesic distances...')
-
             t = trange(0, num_rows, self.__num_gpus)
 
             for i in t:
@@ -899,8 +854,6 @@ class lsp(object):
             num_rows = len(treated_projections[0])
             all_idxs = range(num_rows)
 
-            self.__log('Calculating geodesic distances...')
-
             t = trange(0, num_rows, self.__num_gpus)
 
             for i in t:
@@ -942,453 +895,417 @@ class lsp(object):
 
         return ret
 
-    def start(self, pretraining_batches=100, report_rate=80, name='results', tensorboard=None, ordination_vis=False, num_gpus=1, num_threads=1, saliency_target=None, decoder_vis=False):
+    def start(self, pretraining_epochs=10, report_rate=80, name='results', tensorboard=None, ordination_vis=False, num_gpus=1, num_threads=1, saliency_target=None, decoder_vis=False):
         """Begins training"""
 
         self.results_path = './' + os.path.basename(name) + '-results'
-        self.__num_folds = len(self.__record_files)
 
-        self.__pretraining_batches = pretraining_batches
         self.__report_rate = report_rate
         self.__num_gpus = num_gpus
+        self.__batch_size = self.__batch_size / num_gpus
         self.__num_threads = num_threads
 
         self.__make_directory(self.results_path)
 
-        for i in range(self.__num_timepoints):
-            self.__all_projections.append([])
-
         self.__log('Using {0} GPUs and {1} CPU threads'.format(self.__num_gpus, self.__num_threads))
         self.__log('Results will be saved into {0}'.format(self.results_path))
 
-        # Folds control
-        for current_fold in range(self.__num_folds):
-            self.__current_fold = current_fold
-            self.__log('Doing fold {0}'.format(current_fold))
+        self.__current_test_file = self.__record_files[0]
+        self.__current_train_files = [f for f in self.__record_files if f != self.__current_test_file]
 
-            can_fold_file = self.__record_files[0]
-            self.__current_test_file = self.__record_files[current_fold]
-            self.__current_train_files = [f for f in self.__record_files if f != self.__current_test_file]
+        self.__num_train_samples = sum([self.__get_num_records(x) for x in self.__current_train_files])
+        self.__num_test_samples = self.__get_num_records(self.__current_test_file)
 
-            if tensorboard is not None:
-                self.__tb_file = os.path.join(tensorboard, '{0}_fold{1}'.format(name, self.__current_fold))
-            else:
-                self.__tb_file = None
+        self.__log('Training samples: {0}'.format(self.__num_train_samples))
+        self.__log('Testing samples: {0}'.format(self.__num_test_samples))
 
-            # Failure loop
-            for current_attempt in range(self.__num_fold_restarts):
-                self.__log('This is attempt {0}'.format(current_attempt))
+        self.__pretraining_batches = (self.__num_train_samples * pretraining_epochs) / (self.__batch_size)
 
-                self.__reset_graph()
+        self.__all_projections = [[] for i in range(self.__num_timepoints)]
 
-                # If this isn't the first try, delete the old tensorflow accumulator
-                if tensorboard is not None and current_attempt > 0:
-                    shutil.rmtree(self.__tb_file)
+        if tensorboard is not None:
+            self.__tb_file = os.path.join(tensorboard, '{0}'.format(name))
+        else:
+            self.__tb_file = None
 
-                # Gotta add all the shit to the graph again
-                with self.__graph.as_default():
-                    self.__initialize_data(can_fold_file)
+        # Failure loop
+        for current_attempt in range(self.__num_fold_restarts):
+            self.__log('This is attempt {0}'.format(current_attempt))
 
-                    with tf.variable_scope('pretraining'):
-                        # Build the CNN for feature extraction
-                        self.feature_extractor = cnn.cnn(debug=self.__debug, batch_size=self.__batch_size)
+            self.__reset_graph()
 
-                        if self.__do_crop:
-                            self.feature_extractor.set_image_dimensions(int(self.__image_height * self.__crop_amount), int(self.__image_width  * self.__crop_amount), self.__image_depth)
-                        else:
-                            self.feature_extractor.set_image_dimensions(self.__image_height, self.__image_width, self.__image_depth)
+            # If this isn't the first try, delete the old tensorflow accumulator
+            if tensorboard is not None and current_attempt > 0:
+                shutil.rmtree(self.__tb_file)
 
-                        self.__build_convnet()
-                        self.feature_extractor.send_ops_to_graph(self.__graph)
+            # Gotta add all the shit to the graph again
+            with self.__graph.as_default():
+                self.__initialize_data()
 
-                        # Build the LSTM
-                        self.lstm = lstm.lstm(self.__batch_size, self.__lstm_units, self.__graph)
+                with tf.variable_scope('pretraining'):
+                    # Build the CNN for feature extraction
+                    self.feature_extractor = cnn.cnn(debug=self.__debug, batch_size=self.__batch_size)
 
-                    with tf.variable_scope('transformer'):
-                        # Build the subspace transformer network
-                        self.__transformer_net = cnn.cnn(debug=self.__debug, batch_size=self.__batch_size)
-                        self.__transformer_net.set_image_dimensions(1, 1, self.__n)
+                    self.feature_extractor.set_image_dimensions(int(self.__image_height * self.__crop_amount), int(self.__image_width  * self.__crop_amount), self.__image_depth)
 
-                        self.__build_transformer()
-                        self.__transformer_net.send_ops_to_graph(self.__graph)
+                    self.__build_convnet()
+                    self.feature_extractor.send_ops_to_graph(self.__graph)
 
-                    with tf.variable_scope('decoder'):
-                        self.__decoder_net = cnn.cnn(debug=True, batch_size=self.__batch_size, name_prefix="decoder-")
-                        self.__decoder_net.set_image_dimensions(1, 1, self.__n)
+                    # Build the LSTM
+                    self.lstm = lstm.lstm(self.__batch_size, self.__n, self.__graph)
 
-                        self.__build_decoder()
+                with tf.variable_scope('decoder'):
+                    self.__decoder_net = cnn.cnn(debug=True, batch_size=self.__batch_size, name_prefix="decoder-")
+                    self.__decoder_net.set_image_dimensions(1, 1, self.__n + 1)
 
-                        self.__decoder_net.send_ops_to_graph(self.__graph)
+                    self.__build_decoder()
 
-                    all_pretrain_gradients = []
-                    all_reconstruction_gradients = []
+                    self.__decoder_net.send_ops_to_graph(self.__graph)
 
-                    for d in range(num_gpus):
-                        with tf.device('/device:GPU:{0}'.format(d)):
-                            with tf.name_scope('gpu_%d_' % (d)) as scope:
-                                # --- Components for training ---
+                all_pretrain_gradients = []
+                all_reconstruction_gradients = []
 
-                                # Graph inputs
-                                batch_data = self.__input_batch_train
+                for d in range(num_gpus):
+                    with tf.device('/device:GPU:{0}'.format(d)):
+                        with tf.name_scope('gpu_%d_' % (d)) as scope:
 
-                                id, treatment, image_data = self.__parse_batch(batch_data)
+                            # --- Components for training ---
 
-                                # Graph components for main objective
-                                embeddings = []
+                            # Graph inputs
+                            batch_data = self.__input_batch_train
 
-                                resized_height = int(self.__image_height * self.__crop_amount)
-                                resized_width = int(self.__image_width * self.__crop_amount)
+                            id, treatment, image_data = self.__parse_batch(batch_data)
 
-                                # Embed the images
-                                for image in image_data:
-                                    image = self.__apply_image_standardization(image)
-                                    image = self.__apply_augmentations(image, resized_height, resized_width)
+                            # Graph components for main objective
+                            cnn_embeddings = []
 
-                                    emb = self.feature_extractor.forward_pass(image)
-                                    embeddings.append(emb)
+                            resized_height = int(self.__image_height * self.__crop_amount)
+                            resized_width = int(self.__image_width * self.__crop_amount)
 
-                                unaugmented_embeddings = []
+                            # Embed the images
+                            for image in image_data:
+                                if self.__do_crop:
+                                    image = self.__resize_image(image)
 
-                                for image in image_data:
-                                    if self.__do_crop:
-                                        image = self.__resize_image(image)
+                                image = self.__apply_image_standardization(image)
+                                image = self.__apply_augmentations(image, resized_height, resized_width)
 
-                                    image = self.__apply_image_standardization(image)
+                                emb = self.feature_extractor.forward_pass(image)
+                                cnn_embeddings.append(emb)
 
-                                    unaugmented_embeddings.append(self.feature_extractor.forward_pass(image))
+                            predicted_treatment, _ = self.lstm.forward_pass(cnn_embeddings)
 
-                                all_emb = tf.concat(embeddings, 0)
-                                avg = tf.reduce_mean(all_emb, axis=0)
-                                emb_centered = all_emb - avg
-                                cov = tf.matmul(tf.transpose(emb_centered), emb_centered) / (self.__batch_size * self.__num_timepoints)
+                            # Embed unaugmented images for the reconstruction
 
-                                # Add a small epsilon to the diagonal to make sure it's invertible
-                                cov = tf.linalg.set_diag(cov, (tf.linalg.diag_part(cov) + self.__variance_constant))
+                            unaugmented_cnn_embeddings = []
+                            recon_targets = []
 
-                                # Determinant of the covariance matrix
-                                emb_cost = tf.linalg.det(cov)
+                            for image in image_data:
+                                if self.__do_crop:
+                                    image = self.__resize_image(image)
 
-                                predicted_treatment, _ = self.lstm.forward_pass(embeddings)
+                                image = self.__apply_image_standardization(image)
 
-                                treatment_loss = self.__get_treatment_loss(treatment, predicted_treatment)
+                                unaugmented_cnn_embeddings.append(self.feature_extractor.forward_pass(image))
 
-                                cnn_reg_loss = self.feature_extractor.get_regularization_loss()
-                                lstm_reg_loss = self.lstm.get_regularization_loss()
+                                if self.__decoder_activation == 'tanh':
+                                    recon_targets.append(image)
 
-                                # Decoder takes the output from the latent space encoder and tries to reconstruct the input
-                                reconstructions = tf.concat([self.__decoder_net.forward_pass(emb) for emb in unaugmented_embeddings], axis=0)
+                            # Determinant loss
 
-                                decoder_out = self.__decoder_net.layers[-1].output_size
+                            all_emb = tf.concat(cnn_embeddings, 0)
+                            avg = tf.reduce_mean(all_emb, axis=0)
+                            emb_centered = all_emb - avg
+                            cov = tf.matmul(tf.transpose(emb_centered), emb_centered) / (self.__batch_size * self.__num_timepoints)
 
+                            # Add a small epsilon to the diagonal to make sure it's invertible
+                            cov = tf.linalg.set_diag(cov, (tf.linalg.diag_part(cov) + self.__variance_constant))
+
+                            # Determinant of the covariance matrix
+                            emb_cost = tf.linalg.det(cov)
+
+                            # Treatment loss
+                            treatment_loss = self.__get_treatment_loss(treatment, predicted_treatment)
+
+                            # Regularization costs
+                            cnn_reg_loss = self.feature_extractor.get_regularization_loss()
+                            lstm_reg_loss = self.lstm.get_regularization_loss()
+
+                            # Decoder takes the output from the latent space encoder and tries to reconstruct the input
+                            reconstructions = [self.__decoder_net.forward_pass(emb) for emb in cnn_embeddings]
+                            reconstructions_tensor = tf.concat(reconstructions, axis=0)
+
+                            decoder_out = self.__decoder_net.layers[-1].output_size
+
+                            if self.__decoder_activation == 'tanh':
+                                original_images = tf.image.resize_images(tf.concat(recon_targets, axis=0), [decoder_out[1], decoder_out[2]])
+                            else:
                                 original_images = tf.image.resize_images(tf.concat(image_data, axis=0), [decoder_out[1], decoder_out[2]])
 
-                                # A measure of how diverse the reconstructions are
-                                _, rec_var = tf.nn.moments(reconstructions, axes=[0])
-                                reconstruction_diversity = tf.reduce_mean(rec_var)
+                            # A measure of how diverse the reconstructions are
+                            _, rec_var = tf.nn.moments(reconstructions_tensor, axes=[0, 1])
+                            reconstruction_diversity = tf.reduce_mean(rec_var)
 
-                                reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions)), axis=[1, 2, 3])
-                                reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
+                            # Cycle loss
+                            # if self.__decoder_activation == 'tanh':
+                            #     recon_predicted_treatment, _ = self.lstm.forward_pass([
+                            #                                                               self.feature_extractor.forward_pass(
+                            #                                                                   tf.image.resize_images(
+                            #                                                                       image, [
+                            #                                                                           int(self.__image_height * self.__crop_amount),
+                            #                                                                           int(self.__image_width * self.__crop_amount)]))
+                            #                                                                   for image in
+                            #                                                                   reconstructions])
+                            # else:
+                            #     recon_predicted_treatment, _ = self.lstm.forward_pass([
+                            #                                                               self.feature_extractor.forward_pass(
+                            #                                                                   self.__apply_image_standardization(
+                            #                                                                   tf.image.resize_images(
+                            #                                                                       image, [
+                            #                                                                           int(self.__image_height * self.__crop_amount),
+                            #                                                                           int(self.__image_width * self.__crop_amount)]), on_GPU=True))
+                            #                                                               for image in
+                            #                                                               reconstructions])
+                            #
+                            # recon_treatment_loss = self.__get_treatment_loss(treatment, recon_predicted_treatment)
 
-                                reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
+                            pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
 
-                                reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, reconstruction_vars)
+                            pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
 
-                                all_reconstruction_gradients.append(reconstruction_gradients)
+                            pretrain_gradients, _ = self.__get_clipped_gradients(pretrain_total_loss, self.__main_lr, pt_vars)
+                            all_pretrain_gradients.append(pretrain_gradients)
 
-                                # QQ
-                                pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
+                            reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions_tensor)), axis=[1, 2, 3])
+                            reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
 
-                                pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
+                            reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
+                            reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, self.__decoder_lr, reconstruction_vars)
 
-                                pretrain_gradients, _ = self.__get_clipped_gradients(pretrain_total_loss, pt_vars)
-                                all_pretrain_gradients.append(pretrain_gradients)
+                            all_reconstruction_gradients.append(reconstruction_gradients)
 
-                    # Average gradients and apply
-                    if num_gpus == 1:
-                        average_pretrain_gradients = all_pretrain_gradients[0]
-                        average_reconstruction_gradients = all_reconstruction_gradients[0]
+                # Average gradients and apply
+                if num_gpus == 1:
+                    average_pretrain_gradients = all_pretrain_gradients[0]
+                    average_reconstruction_gradients = all_reconstruction_gradients[0]
+                else:
+                    average_pretrain_gradients = self.__average_gradients(all_pretrain_gradients)
+                    average_reconstruction_gradients = self.__average_gradients(all_reconstruction_gradients)
+
+                pretrain_objective = self.__apply_gradients(average_pretrain_gradients, self.__main_lr)
+
+                reconstruction_objective = self.__apply_gradients(average_reconstruction_gradients, self.__decoder_lr)
+
+                # --- Components for testing and saving ---
+
+                # Train inorder for saving samples
+                batch_data_inorder = self.__inorder_input_batch_train
+                id_inorder, treatment_inorder, image_data_inorder = self.__parse_batch(batch_data_inorder)
+
+                cnn_embeddings_inorder = []
+
+                for image in image_data_inorder:
+                    if self.__do_crop:
+                        image = self.__resize_image(image)
+
+                    image = self.__apply_image_standardization(image)
+
+                    cnn_embeddings_inorder.append(self.feature_extractor.forward_pass(image, deterministic=True))
+
+                # Test inorder for saving samples
+                batch_data_test_inorder = self.__inorder_input_batch_test
+                id_test_inorder, treatment_test_inorder, image_data_test_inorder = self.__parse_batch(batch_data_test_inorder)
+
+                cnn_embeddings_test_inorder = []
+
+                for image in image_data_test_inorder:
+                    if self.__do_crop:
+                        image = self.__resize_image(image)
+
+                    image = self.__apply_image_standardization(image)
+
+                    cnn_embeddings_test_inorder.append(self.feature_extractor.forward_pass(image, deterministic=True))
+
+                # Test random for monitoring test loss
+                batch_data_test = self.__input_batch_test
+
+                id_test, treatment_test, image_data_test = self.__parse_batch(batch_data_test)
+
+                processed_images_test = []
+
+                for image in image_data_test:
+                    if self.__do_crop:
+                        image = self.__resize_image(image)
+
+                    image = self.__apply_image_standardization(image)
+
+                    processed_images_test.append(self.feature_extractor.forward_pass(image, deterministic=True))
+
+                predicted_treatment_test, _ = self.lstm.forward_pass(processed_images_test)
+
+                treatment_loss_test = self.__get_treatment_loss(treatment_test, predicted_treatment_test)
+
+                # Decoder testing
+                if self.__decoder_activation == 'tanh':
+                    decoder_test_vec = [(self.__decoder_net.forward_pass(p) + 1.) / 2. for p in cnn_embeddings]
+                else:
+                    decoder_test_vec = [self.__decoder_net.forward_pass(p) for p in cnn_embeddings]
+
+                # Add ops for geodesic calculations
+                self.__build_geodesic_graph()
+
+                # For saliency visualization
+                if saliency_target is not None:
+                    saliency_image = tf.placeholder(tf.float32, shape=(None, self.__image_height, self.__image_width, self.__image_depth))
+
+                    if self.__do_crop:
+                        saliency_image_resized = self.__resize_image(saliency_image)
                     else:
-                        average_pretrain_gradients = self.__average_gradients(all_pretrain_gradients)
-                        average_reconstruction_gradients = self.__average_gradients(all_reconstruction_gradients)
+                        saliency_image_resized = saliency_image
 
-                    pretrain_objective = self.__apply_gradients(average_pretrain_gradients)
+                    saliency_result = self.feature_extractor.forward_pass(saliency_image_resized)
 
-                    reconstruction_objective = self.__apply_gradients(average_reconstruction_gradients)
+                # Aggregate tensorboard summaries
+                if tensorboard is not None:
+                    self.__log('Creating Tensorboard summaries...')
 
-                    # Ops for subspace transformation
-                    self.__transformer_batch_pl = tf.placeholder(tf.float32, shape=(self.__batch_size, self.__n))
-                    self.__transformer_labels_pl = tf.placeholder(tf.float32, shape=(self.__batch_size, self.__n))
+                    tf.summary.scalar('pretrain/treatment_loss', treatment_loss, collections=['pretrain_summaries'])
+                    tf.summary.scalar('pretrain/cnn_reg_loss', cnn_reg_loss, collections=['pretrain_summaries'])
+                    tf.summary.scalar('pretrain/lstm_reg_loss', lstm_reg_loss, collections=['pretrain_summaries'])
+                    tf.summary.scalar('pretrain/emb_cost', emb_cost, collections=['pretrain_summaries'])
+                    tf.summary.histogram('pretrain/predicted_treatment', predicted_treatment, collections=['pretrain_summaries'])
+                    [tf.summary.histogram('gradients/%s-gradient' % g[1].name, g[0], collections=['pretrain_summaries']) for g in average_pretrain_gradients]
 
-                    pred = self.__transformer_net.forward_pass(self.__transformer_batch_pl)
-                    self.__transformer_loss = tf.reduce_mean(tf.square(pred - self.__transformer_labels_pl))
-                    self.__transformer_obj, _ = self.__minimize_with_clipped_gradients(self.__transformer_loss, vars=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='transformer'))
+                    tf.summary.scalar('test/treatment_loss', treatment_loss_test, collections=['pretrain_summaries'])
 
-                    # Add ops for geodesic calculations
-                    self.__build_geodesic_graph()
+                    tf.summary.scalar('decoder/reconstruction_loss_batch_mean', reconstruction_loss, collections=['decoder_summaries'])
+                    tf.summary.scalar('decoder/reconstruction_loss_batch_var', reconstruction_var, collections=['decoder_summaries'])
+                    tf.summary.scalar('decoder/reconstruction_diversity', reconstruction_diversity, collections=['decoder_summaries'])
+                    #tf.summary.scalar('decoder/reconstruction_treatment_loss', recon_treatment_loss, collections=['decoder_summaries'])
+                    tf.summary.image('decoder/reconstructions', reconstructions_tensor, collections=['decoder_summaries'])
 
-                    # --- Components for testing ---
+                    # Filter visualizations
+                    filter_summary = self.__get_weights_as_image(self.feature_extractor.first_layer().weights)
+                    tf.summary.image('filters/first', filter_summary, collections=['pretrain_summaries'])
 
-                    # Test inorder
-                    batch_data_ti = self.__inorder_input_batch_test
-                    id_ti, treatment_ti, image_data_ti = self.__parse_batch(batch_data_ti)
+                    # Summaries for each layer
+                    for layer in self.feature_extractor.layers:
+                        if isinstance(layer, layers.fullyConnectedLayer) or isinstance(layer, layers.convLayer):
+                            tf.summary.histogram('weights/' + layer.name, layer.weights, collections=['pretrain_summaries'])
+                            tf.summary.histogram('biases/' + layer.name, layer.biases, collections=['pretrain_summaries'])
+                            tf.summary.histogram('activations/' + layer.name, layer.activations, collections=['pretrain_summaries'])
 
-                    processed_images_ti = []
+                    self.__pretraining_summaries = tf.summary.merge_all(key='pretrain_summaries')
+                    self.__decoder_summaries = tf.summary.merge_all(key='decoder_summaries')
+                    self.__tb_writer = tf.summary.FileWriter(self.__tb_file)
 
-                    for image in image_data_ti:
-                        if self.__do_crop:
-                            image = self.__resize_image(image)
+                # Initialize network and threads
+                self.__initialize()
 
-                        image = self.__apply_image_standardization(image)
+                # Train the encoder
+                pretrain_succeeded = self.__pretrain(pretrain_objective, treatment_loss, treatment_loss_test)
 
-                        processed_images_ti.append(self.feature_extractor.forward_pass(image, deterministic=True))
+                self.__log('Training finished.')
 
-                    # Canonical fold
-                    if self.__input_batch_canonical is not None:
-                        batch_data_c = self.__input_batch_canonical
-                        _, _, can_point_image_data = self.__parse_batch(batch_data_c)
+                if pretrain_succeeded:
+                    self.__reporter.add('Pretraining fold converged', True)
 
-                        processed_images_c = []
+                    # Train and test the decoder
+                    self.__log('Training decoder...')
+                    self.__train_decoder(reconstruction_objective, reconstruction_loss)
 
-                        for image in can_point_image_data:
-                            if self.__do_crop:
-                                image = self.__resize_image(image)
+                    if decoder_vis:
+                        self.__log('Testing decoder...')
+                        self.__test_decoder(decoder_test_vec, image_data)
 
-                            image = self.__apply_image_standardization(image)
+                    self.__log('Saving training samples...')
+                    self.__save_full_datapoints(id_inorder, treatment_inorder, cnn_embeddings_inorder, self.__num_train_samples)
 
-                            processed_images_c.append(self.feature_extractor.forward_pass(image))
+                    self.__log('Saving testing samples...')
+                    self.__save_full_datapoints(id_test_inorder, treatment_test_inorder, cnn_embeddings_test_inorder, self.__num_test_samples)
 
-                    # Test (embedding) set
-                    batch_data_test = self.__input_batch_test
+                    self.__log('Calculating geodesic distances...')
 
-                    id_test, treatment_test, image_data_test = self.__parse_batch(batch_data_test)
+                    # Save geodesic distances for this fold
+                    self.__current_projections = self.__get_geodesics_for_all_projections()
+                    self.__geo_pheno.extend(self.__current_projections)
 
-                    processed_images_test = []
+                    # Ordination plots
+                    if ordination_vis:
+                        self.__log('Saving ordination plots...')
+                        self.__make_directory(self.results_path + '/ordination-plots')
 
-                    for image in image_data_test:
-                        if self.__do_crop:
-                            image = self.__resize_image(image)
+                        plotter.plot_general_ordination_plot(self.__all_projections,
+                                                             os.path.join(self.results_path, 'ordination-plots',
+                                                             'general-ordination.png'))
 
-                        image = self.__apply_image_standardization(image)
+                    self.__log('Process complete, finishing up...')
 
-                        processed_images_test.append(self.feature_extractor.forward_pass(image, deterministic=True))
-
-                    predicted_treatment_test, _ = self.lstm.forward_pass(processed_images_test)
-
-                    treatment_loss_test = self.__get_treatment_loss(treatment_test, predicted_treatment_test)
-
-                    # For saliency visualization
+                    # Saliency visualization
                     if saliency_target is not None:
-                        saliency_image = tf.placeholder(tf.float32, shape=(None, self.__image_height, self.__image_width, self.__image_depth))
+                        self.__log('Outputting saliency figure...')
 
-                        if self.__do_crop:
-                            saliency_image_resized = self.__resize_image(saliency_image)
-                        else:
-                            saliency_image_resized = saliency_image
+                        self.__make_directory(os.path.join(self.results_path, 'saliency'))
 
-                        saliency_result = self.feature_extractor.forward_pass(saliency_image_resized)
+                        def LoadImage(file_path):
+                            im = Image.open(file_path)
+                            im = np.asarray(im)
+                            return im / 127.5 - 1.0
 
-                    decoder_test_vec = self.__decoder_net.forward_pass(processed_images_test[-1])
+                        activations = saliency_result
+                        y = tf.norm(activations)
 
-                    # Aggregate tensorboard summaries
-                    if tensorboard is not None:
-                        self.__log('Creating Tensorboard summaries...')
+                        saliency_test_image = LoadImage(saliency_target)
 
-                        tf.summary.scalar('pretrain/treatment_loss', treatment_loss, collections=['pretrain_summaries'])
-                        tf.summary.scalar('pretrain/cnn_reg_loss', cnn_reg_loss, collections=['pretrain_summaries'])
-                        tf.summary.scalar('pretrain/lstm_reg_loss', lstm_reg_loss, collections=['pretrain_summaries'])
-                        tf.summary.scalar('pretrain/emb_cost', emb_cost, collections=['pretrain_summaries'])
-                        tf.summary.histogram('pretrain/predicted_treatment', predicted_treatment, collections=['pretrain_summaries'])
-                        [tf.summary.histogram('gradients/%s-gradient' % g[1].name, g[0], collections=['pretrain_summaries']) for g in average_pretrain_gradients]
+                        gbp = saliency.GuidedBackprop(self.__graph, self.__session, y, saliency_image)
 
-                        tf.summary.scalar('test/treatment_loss', treatment_loss_test, collections=['pretrain_summaries'])
+                        gbp_mask = gbp.GetSmoothedMask(saliency_test_image)
 
-                        tf.summary.scalar('decoder/reconstruction_loss_batch_mean', reconstruction_loss, collections=['decoder_summaries'])
-                        tf.summary.scalar('decoder/reconstruction_loss_batch_var', reconstruction_var, collections=['decoder_summaries'])
-                        tf.summary.scalar('decoder/reconstruction_diversity', reconstruction_diversity, collections=['decoder_summaries'])
+                        smoothgrad_mask_grayscale = saliency.VisualizeImageGrayscale(gbp_mask)
 
-                        tf.summary.image('decoder/reconstructions', reconstructions, collections=['decoder_summaries'])
+                        self.__save_as_image(smoothgrad_mask_grayscale, os.path.join(self.results_path, 'saliency', 'saliency.png'))
 
-                        # Filter visualizations
-                        filter_summary = self.__get_weights_as_image(self.feature_extractor.first_layer().weights)
-                        tf.summary.image('filters/first', filter_summary, collections=['pretrain_summaries'])
+                    # Write to disk in .pheno format
+                    df = pd.DataFrame(self.__geo_pheno)
+                    df.columns = ['genotype', 'treatment', 'geodesic']
+                    df.to_csv(os.path.join(self.results_path, name + '-geo.csv'), sep=' ', index=False)
 
-                        # Summaries for each layer
-                        for layer in self.feature_extractor.layers:
-                            if isinstance(layer, layers.fullyConnectedLayer) or isinstance(layer, layers.convLayer):
-                                tf.summary.histogram('weights/' + layer.name, layer.weights, collections=['pretrain_summaries'])
-                                tf.summary.histogram('biases/' + layer.name, layer.biases, collections=['pretrain_summaries'])
-                                tf.summary.histogram('activations/' + layer.name, layer.activations, collections=['pretrain_summaries'])
+                    self.__log('.pheno file saved.')
 
-                        self.__pretraining_summaries = tf.summary.merge_all(key='pretrain_summaries')
-                        self.__decoder_summaries = tf.summary.merge_all(key='decoder_summaries')
-                        self.__tb_writer = tf.summary.FileWriter(self.__tb_file)
+                    # Write a plot of output values
+                    self.__log('Writing trait value plot...')
 
-                    # Initialize network and threads
-                    self.__initialize()
+                    bins = np.linspace(np.amin(df['geodesic'].tolist()), np.amax(df['geodesic'].tolist()), 100)
+                    treated = df.loc[df['treatment'] == 1, 'geodesic'].tolist()
+                    untreated = df.loc[df['treatment'] == 0, 'geodesic'].tolist()
 
-                    shortcut = False
+                    plt.clf()
+                    plt.hist(treated, bins, alpha=0.5, label='treated')
+                    plt.hist(untreated, bins, alpha=0.5, label='control')
+                    plt.legend(loc='upper right')
+                    plt.savefig(os.path.join(self.results_path, 'trait-histogram.png'))
 
-                    if shortcut:
-                        self.__log('DEBUGGING: Taking post-training shortcut...')
+                    # Write tensorboard projector summary
+                    if self.__tb_file is not None:
+                        self.__save_embeddings()
 
-                        pretrain_succeeded = True
-                        self.__current_fold = self.__num_folds - 1
+                    self.__shutdown()
+                    break
+                else:
+                    self.__shutdown()
+                    self.__reset_graph()
 
-                        self.__all_projections = load('all_projections.pkl')
+                    if current_attempt == self.__num_fold_restarts - 1:
+                        self.__reporter.add('Pretraining did NOT converge', False)
+                        self.__log('Pretraining failed the maximum number of times.')
 
-                        self.load_state()
-                    else:
-                        pretrain_succeeded = self.__pretrain(pretrain_objective, treatment_loss, treatment_loss_test)
-
-                        self.__log('Pretraining finished.')
-
-                        if pretrain_succeeded:
-                            # Save all the embeddings from the test set, using the canonical transform if this is not the first fold
-                            if self.__current_fold == 0:
-                                self.__log('Saving projections for test set...')
-                                self.__save_full_datapoints(id_ti, treatment_ti, processed_images_ti)
-                            else:
-                                self.__log('Learning a transformation from this learned space to the canonical space...')
-
-                                if self.__transformation_method == 'Linear':
-                                    trans_succeeded, trans_score, canon_model = self.__find_canonical_transformation(processed_images_c)
-                                    self.__log('Transformation R^2 score: {0}'.format(trans_score))
-                                elif self.__transformation_method == 'NeuralNet':
-                                    trans_succeeded, trans_score = self.__find_canonical_transformation(processed_images_c)
-                                    self.__log('Transformation loss: {0}'.format(trans_score))
-
-                                if trans_succeeded:
-                                    if self.__transformation_method == 'Linear':
-                                        self.__reporter.add('Fold {0} transformation R^2: {1}'.format(self.__current_fold, trans_score), trans_succeeded)
-                                        self.__log('Saving projections for test set...')
-                                        self.__save_full_datapoints(id_ti, treatment_ti, processed_images_ti, canon_matrix=canon_model)
-                                    elif self.__transformation_method == 'NeuralNet':
-                                        self.__reporter.add('Fold {0} transformation loss: {1}'.format(self.__current_fold, trans_score), trans_succeeded)
-                                        self.__log('Saving projections for test set...')
-                                        self.__save_full_datapoints(id_ti, treatment_ti, processed_images_ti, canon_matrix=True)
-                                else:
-                                    # Even though the pretrain worked, the transform did not so retry.
-                                    self.__log('Pretrain succeeded but transform did not.')
-                                    pretrain_succeeded = False
-
-                    if pretrain_succeeded:
-                        if not shortcut:
-                            self.__reporter.add('Pretraining fold %d converged' % self.__current_fold, True)
-
-                            if self.__current_fold == 0:
-                                # Train and test the decoder
-                                self.__log('Training decoder...')
-                                self.__train_decoder(reconstruction_objective, reconstruction_loss)
-
-                                if decoder_vis:
-                                    self.__log('Testing decoder...')
-                                    self.__test_decoder(decoder_test_vec, image_data_test[-1])
-
-                                # Save the parameters of the decoder so we can load it later
-                                self.__save_decoder()
-
-
-                            # If we are done all the folds now
-                            if (self.__current_fold + 1) == self.__num_folds:
-                                # Saliency visualization
-                                if saliency_target is not None:
-                                    self.__log('Outputting saliency figure...')
-
-                                    plotter.make_directory(os.path.join(self.results_path, 'saliency'))
-
-                                    def LoadImage(file_path):
-                                        im = Image.open(file_path)
-                                        im = np.asarray(im)
-                                        return im / 127.5 - 1.0
-
-                                    activations = saliency_result
-                                    y = tf.norm(activations)
-
-                                    saliency_test_image = LoadImage(saliency_target)
-
-                                    gbp = saliency.GuidedBackprop(self.__graph, self.__session, y, saliency_image)
-
-                                    gbp_mask = gbp.GetSmoothedMask(saliency_test_image)
-
-                                    smoothgrad_mask_grayscale = saliency.VisualizeImageGrayscale(gbp_mask)
-
-                                    self.__save_as_image(smoothgrad_mask_grayscale, os.path.join(self.results_path, 'saliency', 'saliency-fold{0}.png'.format(current_fold)))
-
-                        if (self.__current_fold + 1) == self.__num_folds:
-                            # Load the decoder back up
-                            self.__load_decoder()
-
-                            # Compute all geodesics
-                            geo_pheno = self.__get_geodesics_for_all_projections()
-
-                            # Write to disk in .pheno format
-                            df = pd.DataFrame(geo_pheno)
-                            df.columns = ['genotype', 'treatment', 'geodesic']
-                            df.to_csv(os.path.join(self.results_path, name + '-geo.csv'), sep=' ', index=False)
-
-                            self.__log('.pheno file saved.')
-
-                            # Write a plot of output values
-                            self.__log('Writing trait value plot...')
-
-                            bins = np.linspace(np.amin(df['geodesic'].tolist()), np.amax(df['geodesic'].tolist()), 100)
-                            treated = df.loc[df['treatment'] == 1, 'geodesic'].tolist()
-                            untreated = df.loc[df['treatment'] == 0, 'geodesic'].tolist()
-
-                            plt.clf()
-                            plt.hist(treated, bins, alpha=0.5, label='treated')
-                            plt.hist(untreated, bins, alpha=0.5, label='control')
-                            plt.legend(loc='upper right')
-                            plt.savefig(os.path.join(self.results_path, 'trait-histogram.png'))
-
+                        self.__log('Could not embed, will terminate here.')
                         self.__shutdown()
-                        break
+                        exit()
                     else:
-                        self.__shutdown()
-                        self.__reset_graph()
-
-                        if current_attempt == self.__num_fold_restarts - 1:
-                            self.__reporter.add('Pretraining fold %d did NOT converge' % self.__current_fold, False)
-                            self.__log('Pretraining failed the maximum number of times.')
-
-                            if self.__current_fold == 0:
-                                self.__log('Could not embed the first fold, will terminate here.')
-                                self.__shutdown()
-                                exit()
-
-                            break
-                        else:
-                            self.__log('Pretraining attempt did not succeed, will try again.')
-                            self.__num_failed_attempts += 1
-                            continue
-
-        if ordination_vis:
-            # Write general ordination plot
-            all_keys = [x[0] for x in self.__all_projections[0]]
-            combined_vecs = []
-
-            def find_vec_for_genotype(gen, ss):
-                for s in ss:
-                    if s[0] == gen:
-                        return s[2]
-
-                return None
-
-            for k in all_keys:
-               a = find_vec_for_genotype(k, self.__all_projections[0])
-               b = find_vec_for_genotype(k, self.__all_projections[-1])
-
-               if a is None or b is None:
-                   continue
-
-               combined_vecs.append((b - a))
-
-            self.__log('Saving ordination plots...')
-
-            plotter.plot_general_ordination_plot(combined_vecs,
-                                                self.results_path + '/ordination-plots',
-                                                self.__num_timepoints,
-                                                self.__n)
+                        self.__log('Pretraining attempt did not succeed, will try again.')
+                        self.__num_failed_attempts += 1
+                        continue
 
         self.__log('Sanity checks:')
         self.__reporter.print_all()
@@ -1396,12 +1313,12 @@ class lsp(object):
         if self.__reporter.all_succeeded():
             self.__log(emoji.emojize('Everything looks like it succeeded! Check the output folder for results. :beer_mug:'))
         else:
-            self.__log('Something went wrong. Results were written but not expected to be correct.')
+            self.__log('One or more folds failed. Partial output was written without the full population.')
 
         self.__log('Run statistics:')
         self.__log('Total time elapsed: {0}'.format(self.__global_timer.elapsed()))
         self.__log('Total failed pretrain attempts: {0}'.format(self.__num_failed_attempts))
-        self.__log('Total population size ultimately used: {0}'.format(len(self.__all_projections[0])))
+        self.__log('Total population size ultimately used: {0}'.format(len(self.__geo_pheno)))
 
     def __pretrain(self, pretrain_op, loss_op, test_loss_op):
         self.__log('Starting embedding learning...')
@@ -1416,7 +1333,7 @@ class lsp(object):
         t = trange(self.__pretraining_batches)
 
         for i in t:
-            if i % self.__report_rate == 0:
+            if i % self.__report_rate == 0 and i > 0:
                 if self.__tb_file is not None:
                     _, batch_loss, summary = self.__session.run([pretrain_op, loss_op, self.__pretraining_summaries])
                     self.__tb_writer.add_summary(summary, i)
@@ -1442,14 +1359,17 @@ class lsp(object):
     def __train_decoder(self, train_op, loss_op):
         samples_per_sec = 0.
 
+        # Needed for batch norm
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        train_op = tf.group([train_op, update_ops])
+
         t = trange(self.__decoder_iterations)
 
         for i in t:
-            if i % self.__report_rate == 0:
+            if i % self.__report_rate == 0 and i > 0:
                 if self.__tb_file is not None:
                     _, batch_loss, summary = self.__session.run([train_op, loss_op, self.__decoder_summaries])
                     self.__tb_writer.add_summary(summary, i)
-                    self.__tb_writer.flush()
                 else:
                     _, batch_loss = self.__session.run([train_op, loss_op])
 
@@ -1462,16 +1382,20 @@ class lsp(object):
                 elapsed = time.time() - start_time
                 samples_per_sec = (self.__batch_size / elapsed) * self.__num_gpus
 
-    def __test_decoder(self, decoder_op, test_image_op):
-        test_image, decoder_output = self.__session.run([test_image_op, decoder_op])
-        plotter.make_directory(os.path.join(self.results_path, 'decoder'))
+    def __test_decoder(self, decoder_ops, test_image_ops):
+        self.__make_directory(os.path.join(self.results_path, 'decoder'))
 
-        for i in range(self.__batch_size):
-            real = np.squeeze(test_image[i, :, :, :])
-            self.__save_as_image(real, os.path.join(self.results_path, 'decoder', 'decoder-fold{1}-real-{0}.png'.format(i, self.__current_fold)))
+        test_results = self.__session.run(test_image_ops + decoder_ops)
+        test_images = test_results[:self.__num_timepoints]
+        decoder_images = test_results[self.__num_timepoints:]
 
-            generated = np.squeeze(decoder_output[i, :, :, :])
-            self.__save_as_image(generated, os.path.join(self.results_path, 'decoder', 'decoder-fold{1}-generated-{0}.png'.format(i, self.__current_fold)))
+        for i, (test_image, decoder_output) in enumerate(list(zip(test_images, decoder_images))):
+            for j in range(self.__batch_size):
+                real = np.squeeze(test_image[j, :, :, :])
+                self.__save_as_image(real, os.path.join(self.results_path, 'decoder', 'decoder-real-sample{0}-timestep{1}.png'.format(j, i)))
+
+                generated = np.squeeze(decoder_output[j, :, :, :])
+                self.__save_as_image(generated, os.path.join(self.results_path, 'decoder', 'decoder-generated-sample{0}-timestep{1}.png'.format(j, i)))
 
     def __get_weights_as_image(self, kernel, normalize=True):
         """Filter visualization, adapted with permission from https://gist.github.com/kukuruza/03731dc494603ceab0c5"""

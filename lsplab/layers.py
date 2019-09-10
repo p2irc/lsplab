@@ -1,10 +1,11 @@
 import tensorflow as tf
 import math
 import numpy as np
+import copy
 
 
 class convLayer(object):
-    def __init__(self, name, input_size, filter_dimension, stride_length, activation_function, initializer, reshape=False):
+    def __init__(self, name, input_size, filter_dimension, stride_length, activation_function, initializer, reshape=False, batchnorm=False):
         self.name = name
         self.filter_dimension = filter_dimension
         self.__stride_length = stride_length
@@ -16,13 +17,18 @@ class convLayer(object):
         if reshape:
             self.input_size = [input_size[0], 1, 1, self.input_size[1]]
 
-        self.output_size = self.input_size
+        self.output_size = copy.deepcopy(self.input_size)
 
         padding = 2*(math.floor(filter_dimension[0] / 2))
         self.output_size[1] = int((self.output_size[1] - filter_dimension[0] + padding) / stride_length + 1)
         padding = 2 * (math.floor(filter_dimension[1] / 2))
         self.output_size[2] = int((self.output_size[2] - filter_dimension[1] + padding) / stride_length + 1)
         self.output_size[-1] = filter_dimension[-1]
+
+        if batchnorm:
+            self.__bn_layer = batchNormLayer(self.name + '_bn', self.output_size)
+        else:
+            self.__bn_layer = None
 
     def add_to_graph(self, graph):
         with graph.as_default():
@@ -41,6 +47,9 @@ class convLayer(object):
                                           initializer=tf.constant_initializer(0.1),
                                           dtype=tf.float32)
 
+        if self.__bn_layer is not None:
+            self.__bn_layer.add_to_graph(graph)
+
     def forward_pass(self, x, deterministic):
         if self.__reshape:
             x = tf.expand_dims(tf.expand_dims(x, 1), 1)
@@ -52,11 +61,17 @@ class convLayer(object):
 
         activations = tf.nn.bias_add(activations, self.biases)
 
+        # Apply batchnorm if necessary
+        if self.__bn_layer is not None:
+            activations = self.__bn_layer.forward_pass(activations, deterministic=deterministic)
+
         # Apply a non-linearity specified by the user
         if self.__activation_function == 'relu':
             activations = tf.nn.relu(activations)
         elif self.__activation_function == 'tanh':
             activations = tf.tanh(activations)
+        elif self.__activation_function == 'sigmoid':
+            activations = tf.sigmoid(activations)
 
         self.activations = activations
 
@@ -192,6 +207,38 @@ class batchNormLayer(object):
         x = self.__layer.apply(x, training=True)
 
         return x
+
+
+class skipConnection(object):
+    """Makes a skip connection"""
+    def __init__(self, name, input_size, downsampled):
+        self.name = name
+        self.input_size = input_size
+        self.output_size = input_size
+        self.downsampled = downsampled
+
+        if downsampled:
+            filters = self.input_size[-1]
+
+            self.layer = convLayer(self.name + 'downsample',
+                                   self.input_size,
+                                   [1, 1, filters / 2, filters],
+                                   2,
+                                   None,
+                                   'xavier',
+                                   False,
+                                   False)
+
+    def add_to_graph(self, graph):
+        with graph.as_default():
+            if self.downsampled:
+                self.layer.add_to_graph(graph)
+
+    def forward_pass(self, x, deterministic):
+        if self.downsampled:
+            return self.layer.forward_pass(x, deterministic)
+        else:
+            return x
 
 
 class upsampleLayer(object):

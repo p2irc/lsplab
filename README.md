@@ -38,8 +38,7 @@ num_threads = 20
 # How many gpus to use for training.
 num_gpus = 1
 
-# This is usually a good batch size. Larger batch sizes may cause you to run out of GPU memory and cause a crash.
-# Make sure you divide the batch size by the number of GPUs, as one batch will be run per GPU.
+# This is usually a good batch size. Larger batch sizes may cause you to run out of GPU memory.
 batch_size = 16
 
 # What you want to name this run. The results will be saved in a folder called Setaria-results.
@@ -58,7 +57,7 @@ model = lab.lsp(debug=True, batch_size=batch_size)
 model.load_records(records_output_path, image_height, image_width, num_timepoints)
 
 # Start the model. See below for options.
-model.start(pretraining_batches=1000, report_rate=100, name=name, decoder_vis=True, num_gpus=num_gpus, num_threads=num_threads)
+model.start(pretraining_epochs=10, report_rate=100, name=name, decoder_vis=True, num_gpus=num_gpus, num_threads=num_threads)
 ```
 
 ## Loading Data
@@ -133,8 +132,6 @@ These are advanced settings you can change before calling `model.start` if you w
 `model.set_n(int)` - Sets the dimensionality of the latent space (default is `16`). The default should usually be sufficient.
 
 `model.set_variance_constant(int)` - Sets the value lambda<sub>v</sub> described in the paper the paper (default is `0.2`).
-
-`model.set_transformation_method(['Linear', 'NeuralNet'])` - Use either a linear regression method (`Linear`, default) or a 2-layer neural network (`NeuralNet`) for subspace transformations. Linear methods are less likely to overfit but may lose imprtant non-linearity in the data manifold.
 
 `model.set_augmentation(True)` - Use data augmentation for embedding learning and decoder training (default is `False`). Performs horizontal flipping and brightness/contrast skews.
 

@@ -29,6 +29,7 @@ class cnn(object):
     __num_layers_dropout = 0
     __num_layers_batchnorm = 0
     __num_layers_upsample = 0
+    __num_skip_connections = 0
 
     # Augmentation
     __augmentation_crop = False
@@ -80,7 +81,7 @@ class cnn(object):
 
         self.layers.append(layer)
 
-    def add_convolutional_layer(self, filter_dimension, stride_length, activation_function):
+    def add_convolutional_layer(self, filter_dimension, stride_length, activation_function, batchnorm=False):
         """
         Add a convolutional layer to the model.
 
@@ -100,9 +101,10 @@ class cnn(object):
                                  stride_length,
                                  activation_function,
                                  self.__weight_initializer,
-                                 reshape)
+                                 reshape,
+                                 batchnorm)
 
-        self.__log('Filter dimensions: {0} Outputs: {1}'.format(filter_dimension, layer.output_size))
+        self.__log('Filter dimensions: {0} Inputs: {1} Outputs: {2}'.format(filter_dimension, layer.input_size, layer.output_size))
 
         self.layers.append(layer)
 
@@ -145,6 +147,18 @@ class cnn(object):
         self.__log('Adding batch norm layer %s...' % layer_name)
 
         layer = layers.batchNormLayer(layer_name, self.last_layer_output_size())
+
+        self.layers.append(layer)
+
+    def add_skip_connection(self, downsampled=False):
+        """Adds a residual connection between this point and the last residual connection"""
+        self.__num_skip_connections += 1
+        layer_name = self.__name_prefix + 'sk%d' % self.__num_skip_connections
+        self.__log('Adding skip connection...')
+
+        layer = layers.skipConnection(layer_name, self.last_layer_output_size(), downsampled)
+
+        self.__log('Inputs: {0} Outputs: {1}'.format(layer.input_size, layer.output_size))
 
         self.layers.append(layer)
 
@@ -245,7 +259,17 @@ class cnn(object):
         :param deterministic: if True, performs inference-time operations on stochastic layers e.g. DropOut layers
         :return: output tensor where the first dimension is batch
         """
+        last_residual = None
+
         for layer in self.layers:
+            if isinstance(layer, layers.skipConnection):
+                # If it's a skip connection, we have to know if it's sending or receiving
+                if last_residual is None:
+                    last_residual = x
+                else:
+                    x = x + layer.forward_pass(last_residual, deterministic=False)
+                    last_residual = x
+            else:
                 x = layer.forward_pass(x, deterministic)
 
         return x
