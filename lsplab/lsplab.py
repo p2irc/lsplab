@@ -53,6 +53,7 @@ class lsp(object):
     __variance_constant = 0.2
     __lstm_units = 8
 
+    __anneal_lr = True
     __pretrain_convergence_thresh_upper = 0.5
 
     # Image options stuff
@@ -308,20 +309,8 @@ class lsp(object):
 
         self.__cache_files.append(cache_file_path)
 
-        self.__inorder_input_batch_train, init_op_2, _ = \
-            biotools.get_sample_from_tfrecords_inorder(self.__current_train_files,
-                                                       self.__batch_size,
-                                                       self.__image_height,
-                                                       self.__image_width,
-                                                       self.__image_depth,
-                                                       self.__num_timepoints,
-                                                       queue_capacity=1,
-                                                       num_threads=self.__num_threads,
-                                                       cached=False,
-                                                       in_memory=self.__use_memory_cache)
-
         # Input pipelines for testing
-        self.__input_batch_test, init_op_3, cache_file_path = \
+        self.__input_batch_test, init_op_2, cache_file_path = \
             biotools.get_sample_from_tfrecords_shuffled(self.__current_test_file,
                                                         self.__batch_size,
                                                         self.__image_height,
@@ -335,19 +324,7 @@ class lsp(object):
 
         self.__cache_files.append(cache_file_path)
 
-        self.__inorder_input_batch_test, init_op_4, _ = \
-            biotools.get_sample_from_tfrecords_inorder(self.__current_test_file,
-                                                       self.__batch_size,
-                                                       self.__image_height,
-                                                       self.__image_width,
-                                                       self.__image_depth,
-                                                       self.__num_timepoints,
-                                                       queue_capacity=1,
-                                                       num_threads=self.__num_threads,
-                                                       cached=False,
-                                                       in_memory=self.__use_memory_cache)
-
-        self.__queue_init_ops = [init_op_1, init_op_2, init_op_3, init_op_4]
+        self.__queue_init_ops = [init_op_1, init_op_2]
 
     def __get_num_records(self, records_path):
         self.__log('Counting records in {0}...'.format(records_path))
@@ -477,9 +454,10 @@ class lsp(object):
 
         return tf.reduce_mean(losses)
 
-    def __get_clipped_gradients(self, loss, lr, vars=None):
-        optimizer = tf.train.AdamOptimizer(lr)
-        #optimizer = tf.contrib.opt.AdamWOptimizer(self.__global_weight_decay, learning_rate=self.__main_lr)
+    def __get_clipped_gradients(self, loss, lr, optimizer=None, vars=None):
+        if optimizer is None:
+            optimizer = tf.train.AdamOptimizer(lr)
+
         gvs = optimizer.compute_gradients(loss, var_list=vars)
 
         # Remove none gradients
@@ -489,9 +467,7 @@ class lsp(object):
 
         return capped_gvs, optimizer
 
-    def __apply_gradients(self, gradients, lr):
-        optimizer = tf.train.AdamOptimizer(lr)
-        #optimizer = tf.contrib.opt.AdamWOptimizer(self.__global_weight_decay, learning_rate=self.__main_lr)
+    def __apply_gradients(self, optimizer, gradients):
         objective = optimizer.apply_gradients(gradients)
 
         return objective
@@ -540,28 +516,70 @@ class lsp(object):
         # Define the structure of the CNN used for feature extraction
         self.feature_extractor.add_input_layer()
 
+        # 4-layer
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, self.__image_depth, 16], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        if self.__use_batchnorm:
-            self.feature_extractor.add_batchnorm_layer()
+        self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 16, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        if self.__use_batchnorm:
-            self.feature_extractor.add_batchnorm_layer()
+        self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=3)
-        if self.__use_batchnorm:
-            self.feature_extractor.add_batchnorm_layer()
+        self.feature_extractor.add_batchnorm_layer()
 
         self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 32, 32], stride_length=1, activation_function='relu')
         self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=2)
-        if self.__use_batchnorm:
-            self.feature_extractor.add_batchnorm_layer()
+        self.feature_extractor.add_batchnorm_layer()
+
+        # vgg-16
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, self.__image_depth, 64], stride_length=1, activation_function='relu')
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 64, 64], stride_length=1, activation_function='relu')
+        # self.feature_extractor.add_pooling_layer(kernel_size=2, stride_length=2)
+        # self.feature_extractor.add_batchnorm_layer()
+        #
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 64, 128], stride_length=1, activation_function='relu')
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 128, 128], stride_length=1, activation_function='relu')
+        # self.feature_extractor.add_pooling_layer(kernel_size=2, stride_length=2)
+        # self.feature_extractor.add_batchnorm_layer()
+        #
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 128, 256], stride_length=1, activation_function='relu')
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 256, 256], stride_length=1, activation_function='relu')
+        # self.feature_extractor.add_pooling_layer(kernel_size=2, stride_length=2)
+        # self.feature_extractor.add_batchnorm_layer()
+        #
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 256, 512], stride_length=1, activation_function='relu')
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 512, 512], stride_length=1, activation_function='relu')
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 512, 512], stride_length=1, activation_function='relu')
+        # self.feature_extractor.add_pooling_layer(kernel_size=2, stride_length=2)
+        # self.feature_extractor.add_batchnorm_layer()
+        #
+        # self.feature_extractor.add_skip_connection()
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 512, 512], stride_length=1, activation_function='relu')
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 512, 512], stride_length=1, activation_function='relu')
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 512, 512], stride_length=1, activation_function='relu')
+        # self.feature_extractor.add_pooling_layer(kernel_size=2, stride_length=2)
+        # self.feature_extractor.add_batchnorm_layer()
+
+        # resnet-7
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[7, 7, self.__image_depth, 64], stride_length=2, activation_function='relu', batchnorm=True)
+        # self.feature_extractor.add_pooling_layer(kernel_size=3, stride_length=2)
+        #
+        # self.feature_extractor.add_skip_connection()
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 64, 64], stride_length=1, activation_function='relu', batchnorm=True)
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 64, 128], stride_length=2, activation_function='relu', batchnorm=True)
+        # self.feature_extractor.add_skip_connection(downsampled=True)
+        #
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 128, 128], stride_length=1, activation_function='relu', batchnorm=True)
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 128, 256], stride_length=2, activation_function='relu', batchnorm=True)
+        # self.feature_extractor.add_skip_connection(downsampled=True)
+        #
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 256, 256], stride_length=1, activation_function='relu', batchnorm=True)
+        # self.feature_extractor.add_convolutional_layer(filter_dimension=[3, 3, 256, 512], stride_length=2, activation_function='relu', batchnorm=True)
+        # self.feature_extractor.add_skip_connection(downsampled=True)
 
         self.feature_extractor.add_fully_connected_layer(output_size=64, activation_function='relu', regularization_coefficient=self.__global_reg)
-
         self.feature_extractor.add_output_layer(output_size=self.__n, activation_function=None, regularization_coefficient=self.__global_reg)
 
     def __build_decoder(self):
@@ -687,9 +705,9 @@ class lsp(object):
                     if self.__geodesic_num_interpolations > 0:
                         ms_dist = tf.reduce_mean(tf.square(intermediate_distances))
 
-                        gradients, optimizer = self.__get_clipped_gradients(ms_dist, self.__main_lr, interpolated_points)
+                        gradients, optimizer = self.__get_clipped_gradients(ms_dist, self.__main_lr, vars=interpolated_points)
                         self.__geodesic_optimizers.append(optimizer)
-                        self.__geodesic_objectives.append(self.__apply_gradients(gradients, self.__main_lr))
+                        self.__geodesic_objectives.append(self.__apply_gradients(optimizer, gradients))
 
         if self.__geodesic_num_interpolations > 0:
             # Collect all of the optimizer variables we have to re-inititalize
@@ -919,7 +937,9 @@ class lsp(object):
         self.__log('Training samples: {0}'.format(self.__num_train_samples))
         self.__log('Testing samples: {0}'.format(self.__num_test_samples))
 
-        self.__pretraining_batches = (self.__num_train_samples * pretraining_epochs) / (self.__batch_size)
+        self.__pretraining_batches = (self.__num_train_samples * pretraining_epochs) / (self.__batch_size * num_gpus)
+
+        self.__log('Training to {0} batches'.format(self.__pretraining_batches))
 
         self.__all_projections = [[] for i in range(self.__num_timepoints)]
 
@@ -965,6 +985,9 @@ class lsp(object):
                 all_pretrain_gradients = []
                 all_reconstruction_gradients = []
 
+                pretrain_optimizer = tf.train.AdamOptimizer(self.__main_lr)
+                recon_optimizer = tf.train.AdamOptimizer(self.__decoder_lr)
+
                 for d in range(num_gpus):
                     with tf.device('/device:GPU:{0}'.format(d)):
                         with tf.name_scope('gpu_%d_' % (d)) as scope:
@@ -995,24 +1018,7 @@ class lsp(object):
 
                             predicted_treatment, _ = self.lstm.forward_pass(cnn_embeddings)
 
-                            # Embed unaugmented images for the reconstruction
-
-                            unaugmented_cnn_embeddings = []
-                            recon_targets = []
-
-                            for image in image_data:
-                                if self.__do_crop:
-                                    image = self.__resize_image(image)
-
-                                image = self.__apply_image_standardization(image)
-
-                                unaugmented_cnn_embeddings.append(self.feature_extractor.forward_pass(image))
-
-                                if self.__decoder_activation == 'tanh':
-                                    recon_targets.append(image)
-
                             # Determinant loss
-
                             all_emb = tf.concat(cnn_embeddings, 0)
                             avg = tf.reduce_mean(all_emb, axis=0)
                             emb_centered = all_emb - avg
@@ -1037,50 +1043,24 @@ class lsp(object):
 
                             decoder_out = self.__decoder_net.layers[-1].output_size
 
-                            if self.__decoder_activation == 'tanh':
-                                original_images = tf.image.resize_images(tf.concat(recon_targets, axis=0), [decoder_out[1], decoder_out[2]])
-                            else:
-                                original_images = tf.image.resize_images(tf.concat(image_data, axis=0), [decoder_out[1], decoder_out[2]])
+                            original_images = tf.image.resize_images(tf.concat(image_data, axis=0), [decoder_out[1], decoder_out[2]])
 
                             # A measure of how diverse the reconstructions are
                             _, rec_var = tf.nn.moments(reconstructions_tensor, axes=[0, 1])
                             reconstruction_diversity = tf.reduce_mean(rec_var)
 
-                            # Cycle loss
-                            # if self.__decoder_activation == 'tanh':
-                            #     recon_predicted_treatment, _ = self.lstm.forward_pass([
-                            #                                                               self.feature_extractor.forward_pass(
-                            #                                                                   tf.image.resize_images(
-                            #                                                                       image, [
-                            #                                                                           int(self.__image_height * self.__crop_amount),
-                            #                                                                           int(self.__image_width * self.__crop_amount)]))
-                            #                                                                   for image in
-                            #                                                                   reconstructions])
-                            # else:
-                            #     recon_predicted_treatment, _ = self.lstm.forward_pass([
-                            #                                                               self.feature_extractor.forward_pass(
-                            #                                                                   self.__apply_image_standardization(
-                            #                                                                   tf.image.resize_images(
-                            #                                                                       image, [
-                            #                                                                           int(self.__image_height * self.__crop_amount),
-                            #                                                                           int(self.__image_width * self.__crop_amount)]), on_GPU=True))
-                            #                                                               for image in
-                            #                                                               reconstructions])
-                            #
-                            # recon_treatment_loss = self.__get_treatment_loss(treatment, recon_predicted_treatment)
-
                             pretrain_total_loss = tf.reduce_sum([treatment_loss, cnn_reg_loss, lstm_reg_loss, emb_cost])
 
                             pt_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'pretraining')
 
-                            pretrain_gradients, _ = self.__get_clipped_gradients(pretrain_total_loss, self.__main_lr, pt_vars)
+                            pretrain_gradients, _ = self.__get_clipped_gradients(pretrain_total_loss, None, optimizer=pretrain_optimizer, vars=pt_vars)
                             all_pretrain_gradients.append(pretrain_gradients)
 
                             reconstruction_losses = tf.reduce_mean(tf.square(tf.subtract(original_images, reconstructions_tensor)), axis=[1, 2, 3])
                             reconstruction_loss, reconstruction_var = tf.nn.moments(reconstruction_losses, axes=[0])
 
                             reconstruction_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'decoder')
-                            reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, self.__decoder_lr, reconstruction_vars)
+                            reconstruction_gradients, _ = self.__get_clipped_gradients(reconstruction_loss, None, optimizer=recon_optimizer, vars=reconstruction_vars)
 
                             all_reconstruction_gradients.append(reconstruction_gradients)
 
@@ -1092,46 +1072,18 @@ class lsp(object):
                     average_pretrain_gradients = self.__average_gradients(all_pretrain_gradients)
                     average_reconstruction_gradients = self.__average_gradients(all_reconstruction_gradients)
 
-                pretrain_objective = self.__apply_gradients(average_pretrain_gradients, self.__main_lr)
+                pretrain_objective = self.__apply_gradients(pretrain_optimizer, average_pretrain_gradients)
 
-                reconstruction_objective = self.__apply_gradients(average_reconstruction_gradients, self.__decoder_lr)
+                reconstruction_objective = self.__apply_gradients(recon_optimizer, average_reconstruction_gradients)
 
                 # --- Components for testing and saving ---
-
-                # Train inorder for saving samples
-                batch_data_inorder = self.__inorder_input_batch_train
-                id_inorder, treatment_inorder, image_data_inorder = self.__parse_batch(batch_data_inorder)
-
-                cnn_embeddings_inorder = []
-
-                for image in image_data_inorder:
-                    if self.__do_crop:
-                        image = self.__resize_image(image)
-
-                    image = self.__apply_image_standardization(image)
-
-                    cnn_embeddings_inorder.append(self.feature_extractor.forward_pass(image, deterministic=True))
-
-                # Test inorder for saving samples
-                batch_data_test_inorder = self.__inorder_input_batch_test
-                id_test_inorder, treatment_test_inorder, image_data_test_inorder = self.__parse_batch(batch_data_test_inorder)
-
-                cnn_embeddings_test_inorder = []
-
-                for image in image_data_test_inorder:
-                    if self.__do_crop:
-                        image = self.__resize_image(image)
-
-                    image = self.__apply_image_standardization(image)
-
-                    cnn_embeddings_test_inorder.append(self.feature_extractor.forward_pass(image, deterministic=True))
 
                 # Test random for monitoring test loss
                 batch_data_test = self.__input_batch_test
 
                 id_test, treatment_test, image_data_test = self.__parse_batch(batch_data_test)
 
-                processed_images_test = []
+                cnn_embeddings_test = []
 
                 for image in image_data_test:
                     if self.__do_crop:
@@ -1139,9 +1091,9 @@ class lsp(object):
 
                     image = self.__apply_image_standardization(image)
 
-                    processed_images_test.append(self.feature_extractor.forward_pass(image, deterministic=True))
+                    cnn_embeddings_test.append(self.feature_extractor.forward_pass(image, deterministic=True))
 
-                predicted_treatment_test, _ = self.lstm.forward_pass(processed_images_test)
+                predicted_treatment_test, _ = self.lstm.forward_pass(cnn_embeddings_test)
 
                 treatment_loss_test = self.__get_treatment_loss(treatment_test, predicted_treatment_test)
 
@@ -1203,11 +1155,11 @@ class lsp(object):
                 self.__initialize()
 
                 # Train the encoder
-                pretrain_succeeded = self.__pretrain(pretrain_objective, treatment_loss, treatment_loss_test)
+                converged, pretrain_succeeded = self.__pretrain(pretrain_objective, treatment_loss, treatment_loss_test)
 
                 self.__log('Training finished.')
 
-                if pretrain_succeeded:
+                if converged and pretrain_succeeded:
                     self.__reporter.add('Pretraining fold converged', True)
 
                     # Train and test the decoder
@@ -1218,11 +1170,14 @@ class lsp(object):
                         self.__log('Testing decoder...')
                         self.__test_decoder(decoder_test_vec, image_data)
 
+                    # Reset queues back to the start
+                    self.__session.run(self.__queue_init_ops)
+
                     self.__log('Saving training samples...')
-                    self.__save_full_datapoints(id_inorder, treatment_inorder, cnn_embeddings_inorder, self.__num_train_samples)
+                    self.__save_full_datapoints(id, treatment, cnn_embeddings, self.__num_train_samples)
 
                     self.__log('Saving testing samples...')
-                    self.__save_full_datapoints(id_test_inorder, treatment_test_inorder, cnn_embeddings_test_inorder, self.__num_test_samples)
+                    self.__save_full_datapoints(id_test, treatment_test, cnn_embeddings_test, self.__num_test_samples)
 
                     self.__log('Calculating geodesic distances...')
 
@@ -1295,6 +1250,11 @@ class lsp(object):
                     self.__shutdown()
                     self.__reset_graph()
 
+                    # Anneal the learning rate
+                    if not converged and self.__anneal_lr:
+                        self.__main_lr = self.__main_lr * 0.1
+                        self.__log('Annealing learning rate to {0}'.format(self.__main_lr))
+
                     if current_attempt == self.__num_fold_restarts - 1:
                         self.__reporter.add('Pretraining did NOT converge', False)
                         self.__log('Pretraining failed the maximum number of times.')
@@ -1349,12 +1309,13 @@ class lsp(object):
                 elapsed = time.time() - start_time
                 samples_per_sec = (self.__batch_size / elapsed) * self.__num_gpus
 
-        # Use the mean loss from 4 test batches to determine training success
-        test_loss = np.mean([self.__session.run(test_loss_op) for x in range(4)])
+        # Use the mean loss from 10 test batches to determine success
+        train_loss = np.mean([self.__session.run(loss_op) for x in range(10)])
+        test_loss = np.mean([self.__session.run(test_loss_op) for x in range(10)])
 
         self.__log('Test loss: {0}'.format(test_loss))
 
-        return test_loss <= self.__pretrain_convergence_thresh_upper
+        return train_loss <= self.__pretrain_convergence_thresh_upper, test_loss <= self.__pretrain_convergence_thresh_upper
 
     def __train_decoder(self, train_op, loss_op):
         samples_per_sec = 0.
