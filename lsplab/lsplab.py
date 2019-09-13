@@ -105,6 +105,7 @@ class lsp(object):
     __geo_pheno = []
     __total_treated_skipped = 0
     __global_timer = None
+    __reporting_chunks = None
 
     def __init__(self, debug, batch_size=8):
         self.__debug = debug
@@ -150,6 +151,9 @@ class lsp(object):
 
     def set_random_seed(self, seed):
         self.__random_seed = seed
+
+    def report_by_chunks(self, chunks):
+        self.__reporting_chunks = chunks
 
     def set_use_batchnorm(self, use_batchnorm):
         self.__use_batchnorm = use_batchnorm
@@ -630,6 +634,7 @@ class lsp(object):
 
     def __build_geodesic_graph(self):
         self.__geodesic_path_lengths = []
+        self.__geodesic_chunk_lengths = []
         self.__geodesic_optimizers = []
         self.__geodesic_interpolated_points = []
         self.__geodesic_objectives = []
@@ -701,6 +706,8 @@ class lsp(object):
 
                     total_path_length = tf.reduce_sum(intermediate_distances)
                     self.__geodesic_path_lengths.append(total_path_length)
+
+                    self.__geodesic_chunk_lengths.append([tf.reduce_sum(intermediate_distances[chunk[0]:chunk[1]]) for chunk in self.__reporting_chunks])
 
                     if self.__geodesic_num_interpolations > 0:
                         ms_dist = tf.reduce_mean(tf.square(intermediate_distances))
@@ -790,7 +797,8 @@ class lsp(object):
 
         # Get final distance
         # QQ
-        dists = self.__session.run(self.__geodesic_path_lengths, feed_dict=fd)
+        #dists = self.__session.run(self.__geodesic_path_lengths, feed_dict=fd)
+        dists = self.__session.run(self.__geodesic_chunk_lengths, feed_dict=fd)
         # dists, points = self.__session.run([self.__geodesic_path_lengths, self.__geodesic_anchor_points], feed_dict=fd)
         #
         # for a, b, c in zip(starts, anchors, ends):
@@ -942,6 +950,9 @@ class lsp(object):
         self.__log('Training to {0} batches'.format(self.__pretraining_batches))
 
         self.__all_projections = [[] for i in range(self.__num_timepoints)]
+
+        if self.__reporting_chunks is None:
+            self.__reporting_chunks = [0, self.__num_timepoints - 1]
 
         if tensorboard is not None:
             self.__tb_file = os.path.join(tensorboard, '{0}'.format(name))
@@ -1221,24 +1232,31 @@ class lsp(object):
                         self.__save_as_image(smoothgrad_mask_grayscale, os.path.join(self.results_path, 'saliency', 'saliency.png'))
 
                     # Write to disk in .pheno format
-                    df = pd.DataFrame(self.__geo_pheno)
-                    df.columns = ['genotype', 'treatment', 'geodesic']
-                    df.to_csv(os.path.join(self.results_path, name + '-geo.csv'), sep=' ', index=False)
+                    for j in range(len(self.__reporting_chunks)):
+                        current_geo = [[row[0], row[1], row[2][j]] for row in self.__geo_pheno]
+                        df = pd.DataFrame(current_geo)
+                        df.columns = ['genotype', 'treatment', 'geodesic']
+                        df.to_csv(os.path.join(self.results_path, name + '{0}-chunk-{1}-geo.csv'.format(name, j)), sep=' ', index=False)
 
-                    self.__log('.pheno file saved.')
+                    self.__log('.pheno file(s) saved.')
 
                     # Write a plot of output values
-                    self.__log('Writing trait value plot...')
+                    for j in range(len(self.__reporting_chunks)):
+                        current_geo = [[row[0], row[1], row[2][j]] for row in self.__geo_pheno]
+                        df = pd.DataFrame(current_geo)
+                        df.columns = ['genotype', 'treatment', 'geodesic']
 
-                    bins = np.linspace(np.amin(df['geodesic'].tolist()), np.amax(df['geodesic'].tolist()), 100)
-                    treated = df.loc[df['treatment'] == 1, 'geodesic'].tolist()
-                    untreated = df.loc[df['treatment'] == 0, 'geodesic'].tolist()
+                        self.__log('Writing trait value plot...')
 
-                    plt.clf()
-                    plt.hist(treated, bins, alpha=0.5, label='treated')
-                    plt.hist(untreated, bins, alpha=0.5, label='control')
-                    plt.legend(loc='upper right')
-                    plt.savefig(os.path.join(self.results_path, 'trait-histogram.png'))
+                        bins = np.linspace(np.amin(df['geodesic'].tolist()), np.amax(df['geodesic'].tolist()), 100)
+                        treated = df.loc[df['treatment'] == 1, 'geodesic'].tolist()
+                        untreated = df.loc[df['treatment'] == 0, 'geodesic'].tolist()
+
+                        plt.clf()
+                        plt.hist(treated, bins, alpha=0.5, label='treated')
+                        plt.hist(untreated, bins, alpha=0.5, label='control')
+                        plt.legend(loc='upper right')
+                        plt.savefig(os.path.join(self.results_path, 'trait-histogram-chunk{0}.png'.format(j)))
 
                     # Write tensorboard projector summary
                     if self.__tb_file is not None:
