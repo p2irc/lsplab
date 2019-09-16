@@ -952,7 +952,7 @@ class lsp(object):
         self.__all_projections = [[] for i in range(self.__num_timepoints)]
 
         if self.__reporting_chunks is None:
-            self.__reporting_chunks = [0, self.__num_timepoints - 1]
+            self.__reporting_chunks = [[0, self.__num_timepoints - 1]]
 
         if tensorboard is not None:
             self.__tb_file = os.path.join(tensorboard, '{0}'.format(name))
@@ -1236,7 +1236,7 @@ class lsp(object):
                         current_geo = [[row[0], row[1], row[2][j]] for row in self.__geo_pheno]
                         df = pd.DataFrame(current_geo)
                         df.columns = ['genotype', 'treatment', 'geodesic']
-                        df.to_csv(os.path.join(self.results_path, name + '{0}-chunk-{1}-geo.csv'.format(name, j)), sep=' ', index=False)
+                        df.to_csv(os.path.join(self.results_path, '{0}-chunk-{1}-geo.csv'.format(name, j)), sep=' ', index=False)
 
                     self.__log('.pheno file(s) saved.')
 
