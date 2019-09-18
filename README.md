@@ -8,6 +8,8 @@ LSP-Lab requires at least one CUDA-compatible GPU. At least 6GB of VRAM and 16GB
 
 Tensorflow 1.0 or higher is required. In order to install all the other required packages, run `pip install -r requirements.txt`.
 
+**Note:** Due to a bug in the cuSolver library, Cuda versions > 9.0 will not work. This means that if you are using a pre-built Tensorflow version (such as with conda or pip), you must install 1.12 at the latest. Installing later pre-built versions of Tensorflow will automatically use incompatible Cuda versions. This package is validated working with Tensorflow 1.12, Cuda 9.0, and CuDNN 7.1.4.
+
 ## Example Usage
 
 ```
@@ -127,6 +129,8 @@ These are advanced settings you can change before calling `model.start` if you w
 
 `model.set_random_seed(int)` - Sets the random seed for improved reproducibility. Without this set, weight initialization will be different on each run. However, this does not provide perfect reproducability, since mini-batching is non-deterministic.
 
+`model.set_use_chunks([list])` - Output results split up by two or more sections of the total path. This is useful for multi-stage experiments. Input is a list of lists where each entry is a list of a start-end pair of indices representing a particular chunk of time. Note that the entries here correspond to path segments, not timepoints. This means that if you are using interpolation, you must take this into account.
+
 `model.set_loss_function(['sce', 'mse'])` - Sets the loss function used for embedding learning to either sigmoid cross-entropy (`sce`, default) or mean squared error (`mse`).
 
 `model.set_n(int)` - Sets the dimensionality of the latent space (default is `16`). The default should usually be sufficient.
@@ -143,7 +147,7 @@ These are advanced settings you can change before calling `model.start` if you w
 
 `model.set_num_decoder_iterations(int)` - Sets the number of batches to do for decoder training (default is `30000`).
 
-`model.set_num_path_vertices(int)` - Sets the number of vertices for the geodesic path optimization (default is `30`).
+`model.set_num_path_vertices(int)` - Sets the number of vertices for the geodesic path optimization (default is `30`). If this is set equal to the number of timepoints, then interpoaltion is not performed.
 
 `model.set_use_memory_cache(bool)` - Caches training samples in memory if `True`, or on disk if `False` (default `False`). Using the in-memory cache can greatly increase speed, but may cause you to run out of system memory for large datasets.
 
