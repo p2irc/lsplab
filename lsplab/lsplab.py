@@ -37,6 +37,7 @@ class lsp(object):
     __mode = 'longitudinal'
     __random_seed = None
     __use_batchnorm = True
+    __downsample_mod = 1
 
     __num_folds = None
 
@@ -204,6 +205,9 @@ class lsp(object):
             saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='decoder'))
             saver.restore(self.__session, tf.train.latest_checkpoint(directory))
 
+    def use_downsampling(self, mod):
+        self.__downsample_mod = mod
+
     def __save_embeddings(self):
         def save_metadata(batch_ys, metadata_path):
             with open(metadata_path, 'w') as f:
@@ -299,17 +303,19 @@ class lsp(object):
 
     def __initialize_data(self):
         # Input pipelines for training
+
         self.__input_batch_train, init_op_1, cache_file_path = \
             biotools.get_sample_from_tfrecords_shuffled(self.__current_train_files,
                                                         self.__batch_size,
                                                         self.__image_height,
                                                         self.__image_width,
                                                         self.__image_depth,
-                                                        self.__num_timepoints,
+                                                        self.__num_timepoints * self.__downsample_mod,
                                                         queue_capacity=self.__major_queue_capacity,
                                                         num_threads=self.__num_threads,
                                                         cached=True,
-                                                        in_memory=self.__use_memory_cache)
+                                                        in_memory=self.__use_memory_cache,
+                                                        mod=self.__downsample_mod)
 
         self.__cache_files.append(cache_file_path)
 
@@ -320,11 +326,12 @@ class lsp(object):
                                                         self.__image_height,
                                                         self.__image_width,
                                                         self.__image_depth,
-                                                        self.__num_timepoints,
+                                                        self.__num_timepoints * self.__downsample_mod,
                                                         queue_capacity=self.__major_queue_capacity,
                                                         num_threads=self.__num_threads,
                                                         cached=True,
-                                                        in_memory=self.__use_memory_cache)
+                                                        in_memory=self.__use_memory_cache,
+                                                        mod=self.__downsample_mod)
 
         self.__cache_files.append(cache_file_path)
 
@@ -652,6 +659,9 @@ class lsp(object):
             self.__geodesic_num_interpolations = self.__target_vertices - 2
             total_vertices = self.__target_vertices
 
+        if self.__reporting_chunks is None:
+            self.__reporting_chunks = [[0, total_vertices - 1]]
+
         # Assemble a graph
         for d in range(self.__num_gpus):
             with tf.device('/device:GPU:{0}'.format(d)):
@@ -797,24 +807,24 @@ class lsp(object):
 
         # Get final distance
         # QQ
-        #dists = self.__session.run(self.__geodesic_path_lengths, feed_dict=fd)
-        dists = self.__session.run(self.__geodesic_chunk_lengths, feed_dict=fd)
-        # dists, points = self.__session.run([self.__geodesic_path_lengths, self.__geodesic_anchor_points], feed_dict=fd)
-        #
-        # for a, b, c in zip(starts, anchors, ends):
-        #    combined = np.vstack([a, b, c])
-        #
-        #    # Plot path plot
-        #    rand_int = str(random.randint(1, 10000))
-        #    plotter.plot_path(os.path.join(self.results_path, 'path_plots'), rand_int, combined)
-        #
-        #    # Generate image sequence
-        #    plotter.make_directory(os.path.join(self.results_path, 'interpolations'))
-        #
-        #    decoder_output = self.__session.run(self.__geodesic_decoded_intermediate[0])
-        #
-        #    for i, generated in enumerate(decoder_output):
-        #        self.__save_as_image(np.squeeze(generated), os.path.join(self.results_path, 'interpolations', '{0}-{1}.png'.format(rand_int, i)))
+        #dists = self.__session.run(self.__geodesic_chunk_lengths, feed_dict=fd)
+        dists, points = self.__session.run([self.__geodesic_chunk_lengths, self.__geodesic_anchor_points], feed_dict=fd)
+        import random
+
+        for a, b, c in zip(starts, anchors, ends):
+           combined = np.vstack([a, b, c])
+
+           # Plot path plot
+           rand_int = str(random.randint(1, 10000))
+           # plotter.plot_path(os.path.join(self.results_path, 'path_plots'), rand_int, combined)
+
+           # Generate image sequence
+           self.__make_directory(os.path.join(self.results_path, 'interpolations'))
+
+           decoder_output = self.__session.run(self.__geodesic_decoded_intermediate[0])
+
+           for i, generated in enumerate(decoder_output):
+               self.__save_as_image(np.squeeze(generated), os.path.join(self.results_path, 'interpolations', '{0}-{1}.png'.format(rand_int, i)))
 
         return dists
 
@@ -931,6 +941,10 @@ class lsp(object):
         self.__batch_size = self.__batch_size / num_gpus
         self.__num_threads = num_threads
 
+        if self.__downsample_mod > 1:
+            self.__num_timepoints = self.__num_timepoints / self.__downsample_mod
+            self.__log('Downsampling data to {0} timepoints'.format(self.__num_timepoints))
+
         self.__make_directory(self.results_path)
 
         self.__log('Using {0} GPUs and {1} CPU threads'.format(self.__num_gpus, self.__num_threads))
@@ -950,9 +964,6 @@ class lsp(object):
         self.__log('Training to {0} batches'.format(self.__pretraining_batches))
 
         self.__all_projections = [[] for i in range(self.__num_timepoints)]
-
-        if self.__reporting_chunks is None:
-            self.__reporting_chunks = [[0, self.__num_timepoints - 1]]
 
         if tensorboard is not None:
             self.__tb_file = os.path.join(tensorboard, '{0}'.format(name))
