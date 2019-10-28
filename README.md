@@ -131,8 +131,6 @@ These are advanced settings you can change before calling `model.start` if you w
 
 `model.set_use_chunks([list])` - Output results split up by two or more sections of the total path. This is useful for multi-stage experiments. Input is a list of lists where each entry is a list of a start-end pair of indices representing a particular chunk of time. Note that the entries here correspond to path segments, not timepoints. This means that if you are using interpolation, you must take this into account.
 
-`model.set_loss_function(['sce', 'mse'])` - Sets the loss function used for embedding learning to either sigmoid cross-entropy (`sce`, default) or mean squared error (`mse`).
-
 `model.set_n(int)` - Sets the dimensionality of the latent space (default is `16`). The default should usually be sufficient.
 
 `model.set_variance_constant(int)` - Sets the value lambda<sub>v</sub> described in the paper the paper (default is `0.2`).

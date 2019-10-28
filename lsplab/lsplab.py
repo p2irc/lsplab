@@ -29,8 +29,7 @@ class lsp(object):
     __reporter = reporter.reporter()
     __batch_size = None
     __report_rate = None
-    __loss_function = 'sce'
-    __decoder_activation= 'linear'
+    __decoder_activation = 'linear'
     __image_depth = 3
     __num_fold_restarts = 10
     __num_failed_attempts = 0
@@ -252,10 +251,6 @@ class lsp(object):
         plt.imshow(mat, cmap='gray', vmin=0., vmax=1.)
         plt.savefig(path)
 
-    def set_loss_function(self, lf):
-        '''Set the loss function to use'''
-        self.__loss_function = lf
-
     def load_records(self, records_path, image_height, image_width, num_timepoints, image_depth=3):
         """Load records created from the dataset"""
         self.__record_files = [os.path.join(records_path, f) for f in os.listdir(records_path) if
@@ -441,10 +436,6 @@ class lsp(object):
         for timestep in range(len(all_outputs_separated)):
             self.__all_projections[timestep].extend(all_projections[timestep])
 
-    def __log_loss(self, error):
-        """Returns -log(1 - error)"""
-        return -tf.log(tf.clip_by_value(1.0 - error, 1e-10, 1.0))
-
     def __linear_loss(self, vec1, vec2):
         return tf.abs(tf.subtract(vec1, vec2))
 
@@ -454,14 +445,7 @@ class lsp(object):
 
     def __get_treatment_loss(self, treatment, vec):
         treatment_float = tf.cast(treatment, dtype=tf.float32)
-
-        if self.__loss_function == 'sce':
-            losses = self.__sigmoid_cross_entropy_loss(treatment_float, vec)
-        elif self.__loss_function == 'mse':
-            self.__pretrain_convergence_thresh_upper = .2
-            losses = tf.square(self.__linear_loss(treatment_float, vec))
-        else:
-            losses = self.__linear_loss(treatment_float, vec)
+        losses = self.__sigmoid_cross_entropy_loss(treatment_float, vec)
 
         return tf.reduce_mean(losses)
 
@@ -807,24 +791,24 @@ class lsp(object):
 
         # Get final distance
         # QQ
-        #dists = self.__session.run(self.__geodesic_chunk_lengths, feed_dict=fd)
-        dists, points = self.__session.run([self.__geodesic_chunk_lengths, self.__geodesic_anchor_points], feed_dict=fd)
-        import random
-
-        for a, b, c in zip(starts, anchors, ends):
-           combined = np.vstack([a, b, c])
-
-           # Plot path plot
-           rand_int = str(random.randint(1, 10000))
-           # plotter.plot_path(os.path.join(self.results_path, 'path_plots'), rand_int, combined)
-
-           # Generate image sequence
-           self.__make_directory(os.path.join(self.results_path, 'interpolations'))
-
-           decoder_output = self.__session.run(self.__geodesic_decoded_intermediate[0])
-
-           for i, generated in enumerate(decoder_output):
-               self.__save_as_image(np.squeeze(generated), os.path.join(self.results_path, 'interpolations', '{0}-{1}.png'.format(rand_int, i)))
+        dists = self.__session.run(self.__geodesic_chunk_lengths, feed_dict=fd)
+        # dists, points = self.__session.run([self.__geodesic_chunk_lengths, self.__geodesic_anchor_points], feed_dict=fd)
+        # import random
+        #
+        # for a, b, c in zip(starts, anchors, ends):
+        #    combined = np.vstack([a, b, c])
+        #
+        #    # Plot path plot
+        #    rand_int = str(random.randint(1, 10000))
+        #    # plotter.plot_path(os.path.join(self.results_path, 'path_plots'), rand_int, combined)
+        #
+        #    # Generate image sequence
+        #    self.__make_directory(os.path.join(self.results_path, 'interpolations'))
+        #
+        #    decoder_output = self.__session.run(self.__geodesic_decoded_intermediate[0])
+        #
+        #    for i, generated in enumerate(decoder_output):
+        #        self.__save_as_image(np.squeeze(generated), os.path.join(self.results_path, 'interpolations', '{0}-{1}.png'.format(rand_int, i)))
 
         return dists
 
