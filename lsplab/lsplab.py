@@ -29,14 +29,14 @@ class lsp(object):
     __reporter = reporter.reporter()
     __batch_size = None
     __report_rate = None
-    __loss_function = 'sce'
-    __decoder_activation= 'linear'
+    __decoder_activation = 'linear'
     __image_depth = 3
     __num_fold_restarts = 10
     __num_failed_attempts = 0
     __mode = 'longitudinal'
     __random_seed = None
     __use_batchnorm = True
+    __downsample_mod = 1
 
     __num_folds = None
 
@@ -105,6 +105,7 @@ class lsp(object):
     __geo_pheno = []
     __total_treated_skipped = 0
     __global_timer = None
+    __reporting_chunks = None
 
     def __init__(self, debug, batch_size=8):
         self.__debug = debug
@@ -150,6 +151,9 @@ class lsp(object):
 
     def set_random_seed(self, seed):
         self.__random_seed = seed
+
+    def report_by_chunks(self, chunks):
+        self.__reporting_chunks = chunks
 
     def set_use_batchnorm(self, use_batchnorm):
         self.__use_batchnorm = use_batchnorm
@@ -200,6 +204,9 @@ class lsp(object):
             saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='decoder'))
             saver.restore(self.__session, tf.train.latest_checkpoint(directory))
 
+    def use_downsampling(self, mod):
+        self.__downsample_mod = mod
+
     def __save_embeddings(self):
         def save_metadata(batch_ys, metadata_path):
             with open(metadata_path, 'w') as f:
@@ -243,10 +250,6 @@ class lsp(object):
         plt.clf()
         plt.imshow(mat, cmap='gray', vmin=0., vmax=1.)
         plt.savefig(path)
-
-    def set_loss_function(self, lf):
-        '''Set the loss function to use'''
-        self.__loss_function = lf
 
     def load_records(self, records_path, image_height, image_width, num_timepoints, image_depth=3):
         """Load records created from the dataset"""
@@ -295,17 +298,19 @@ class lsp(object):
 
     def __initialize_data(self):
         # Input pipelines for training
+
         self.__input_batch_train, init_op_1, cache_file_path = \
             biotools.get_sample_from_tfrecords_shuffled(self.__current_train_files,
                                                         self.__batch_size,
                                                         self.__image_height,
                                                         self.__image_width,
                                                         self.__image_depth,
-                                                        self.__num_timepoints,
+                                                        self.__num_timepoints * self.__downsample_mod,
                                                         queue_capacity=self.__major_queue_capacity,
                                                         num_threads=self.__num_threads,
                                                         cached=True,
-                                                        in_memory=self.__use_memory_cache)
+                                                        in_memory=self.__use_memory_cache,
+                                                        mod=self.__downsample_mod)
 
         self.__cache_files.append(cache_file_path)
 
@@ -316,11 +321,12 @@ class lsp(object):
                                                         self.__image_height,
                                                         self.__image_width,
                                                         self.__image_depth,
-                                                        self.__num_timepoints,
+                                                        self.__num_timepoints * self.__downsample_mod,
                                                         queue_capacity=self.__major_queue_capacity,
                                                         num_threads=self.__num_threads,
                                                         cached=True,
-                                                        in_memory=self.__use_memory_cache)
+                                                        in_memory=self.__use_memory_cache,
+                                                        mod=self.__downsample_mod)
 
         self.__cache_files.append(cache_file_path)
 
@@ -430,10 +436,6 @@ class lsp(object):
         for timestep in range(len(all_outputs_separated)):
             self.__all_projections[timestep].extend(all_projections[timestep])
 
-    def __log_loss(self, error):
-        """Returns -log(1 - error)"""
-        return -tf.log(tf.clip_by_value(1.0 - error, 1e-10, 1.0))
-
     def __linear_loss(self, vec1, vec2):
         return tf.abs(tf.subtract(vec1, vec2))
 
@@ -443,14 +445,7 @@ class lsp(object):
 
     def __get_treatment_loss(self, treatment, vec):
         treatment_float = tf.cast(treatment, dtype=tf.float32)
-
-        if self.__loss_function == 'sce':
-            losses = self.__sigmoid_cross_entropy_loss(treatment_float, vec)
-        elif self.__loss_function == 'mse':
-            self.__pretrain_convergence_thresh_upper = .2
-            losses = tf.square(self.__linear_loss(treatment_float, vec))
-        else:
-            losses = self.__linear_loss(treatment_float, vec)
+        losses = self.__sigmoid_cross_entropy_loss(treatment_float, vec)
 
         return tf.reduce_mean(losses)
 
@@ -630,6 +625,7 @@ class lsp(object):
 
     def __build_geodesic_graph(self):
         self.__geodesic_path_lengths = []
+        self.__geodesic_chunk_lengths = []
         self.__geodesic_optimizers = []
         self.__geodesic_interpolated_points = []
         self.__geodesic_objectives = []
@@ -646,6 +642,9 @@ class lsp(object):
         elif self.__mode == 'cross sectional':
             self.__geodesic_num_interpolations = self.__target_vertices - 2
             total_vertices = self.__target_vertices
+
+        if self.__reporting_chunks is None:
+            self.__reporting_chunks = [[0, total_vertices - 1]]
 
         # Assemble a graph
         for d in range(self.__num_gpus):
@@ -701,6 +700,8 @@ class lsp(object):
 
                     total_path_length = tf.reduce_sum(intermediate_distances)
                     self.__geodesic_path_lengths.append(total_path_length)
+
+                    self.__geodesic_chunk_lengths.append([tf.reduce_sum(intermediate_distances[chunk[0]:chunk[1]]) for chunk in self.__reporting_chunks])
 
                     if self.__geodesic_num_interpolations > 0:
                         ms_dist = tf.reduce_mean(tf.square(intermediate_distances))
@@ -790,18 +791,19 @@ class lsp(object):
 
         # Get final distance
         # QQ
-        dists = self.__session.run(self.__geodesic_path_lengths, feed_dict=fd)
-        # dists, points = self.__session.run([self.__geodesic_path_lengths, self.__geodesic_anchor_points], feed_dict=fd)
+        dists = self.__session.run(self.__geodesic_chunk_lengths, feed_dict=fd)
+        # dists, points = self.__session.run([self.__geodesic_chunk_lengths, self.__geodesic_anchor_points], feed_dict=fd)
+        # import random
         #
         # for a, b, c in zip(starts, anchors, ends):
         #    combined = np.vstack([a, b, c])
         #
         #    # Plot path plot
         #    rand_int = str(random.randint(1, 10000))
-        #    plotter.plot_path(os.path.join(self.results_path, 'path_plots'), rand_int, combined)
+        #    # plotter.plot_path(os.path.join(self.results_path, 'path_plots'), rand_int, combined)
         #
         #    # Generate image sequence
-        #    plotter.make_directory(os.path.join(self.results_path, 'interpolations'))
+        #    self.__make_directory(os.path.join(self.results_path, 'interpolations'))
         #
         #    decoder_output = self.__session.run(self.__geodesic_decoded_intermediate[0])
         #
@@ -922,6 +924,10 @@ class lsp(object):
         self.__num_gpus = num_gpus
         self.__batch_size = self.__batch_size / num_gpus
         self.__num_threads = num_threads
+
+        if self.__downsample_mod > 1:
+            self.__num_timepoints = self.__num_timepoints / self.__downsample_mod
+            self.__log('Downsampling data to {0} timepoints'.format(self.__num_timepoints))
 
         self.__make_directory(self.results_path)
 
@@ -1221,24 +1227,31 @@ class lsp(object):
                         self.__save_as_image(smoothgrad_mask_grayscale, os.path.join(self.results_path, 'saliency', 'saliency.png'))
 
                     # Write to disk in .pheno format
-                    df = pd.DataFrame(self.__geo_pheno)
-                    df.columns = ['genotype', 'treatment', 'geodesic']
-                    df.to_csv(os.path.join(self.results_path, name + '-geo.csv'), sep=' ', index=False)
+                    for j in range(len(self.__reporting_chunks)):
+                        current_geo = [[row[0], row[1], row[2][j]] for row in self.__geo_pheno]
+                        df = pd.DataFrame(current_geo)
+                        df.columns = ['genotype', 'treatment', 'geodesic']
+                        df.to_csv(os.path.join(self.results_path, '{0}-chunk-{1}-geo.csv'.format(name, j)), sep=' ', index=False)
 
-                    self.__log('.pheno file saved.')
+                    self.__log('.pheno file(s) saved.')
 
                     # Write a plot of output values
-                    self.__log('Writing trait value plot...')
+                    for j in range(len(self.__reporting_chunks)):
+                        current_geo = [[row[0], row[1], row[2][j]] for row in self.__geo_pheno]
+                        df = pd.DataFrame(current_geo)
+                        df.columns = ['genotype', 'treatment', 'geodesic']
 
-                    bins = np.linspace(np.amin(df['geodesic'].tolist()), np.amax(df['geodesic'].tolist()), 100)
-                    treated = df.loc[df['treatment'] == 1, 'geodesic'].tolist()
-                    untreated = df.loc[df['treatment'] == 0, 'geodesic'].tolist()
+                        self.__log('Writing trait value plot...')
 
-                    plt.clf()
-                    plt.hist(treated, bins, alpha=0.5, label='treated')
-                    plt.hist(untreated, bins, alpha=0.5, label='control')
-                    plt.legend(loc='upper right')
-                    plt.savefig(os.path.join(self.results_path, 'trait-histogram.png'))
+                        bins = np.linspace(np.amin(df['geodesic'].tolist()), np.amax(df['geodesic'].tolist()), 100)
+                        treated = df.loc[df['treatment'] == 1, 'geodesic'].tolist()
+                        untreated = df.loc[df['treatment'] == 0, 'geodesic'].tolist()
+
+                        plt.clf()
+                        plt.hist(treated, bins, alpha=0.5, label='treated')
+                        plt.hist(untreated, bins, alpha=0.5, label='control')
+                        plt.legend(loc='upper right')
+                        plt.savefig(os.path.join(self.results_path, 'trait-histogram-chunk{0}.png'.format(j)))
 
                     # Write tensorboard projector summary
                     if self.__tb_file is not None:
