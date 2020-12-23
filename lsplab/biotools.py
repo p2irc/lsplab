@@ -32,12 +32,12 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
 
-    print "Reading .bgwas index file..."
+    print("Reading .bgwas index file...")
 
     # Read metadata about samples from .bgwas file
     labels = pd.read_csv(index_file, header=None).values
 
-    print "Assembling data..."
+    print("Assembling data...")
 
     # Create a list of all images in the images directory
     all_image_filenames = []
@@ -47,7 +47,7 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
             all_image_filenames.append(os.path.join(root, filename))
 
     # Create sequences of images to write as records
-    print "Finding image sequences..."
+    print("Finding image sequences...")
 
     # First sort labels into a dictionary of days present in the dataset
     days_dict = {}
@@ -61,8 +61,8 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
         else:
             days_dict[day] = [label]
 
-    print "Number of timepoints: {0}...".format(len(days_dict))
-    print "Sorting images into sequences..."
+    print("Number of timepoints: {0}...".format(len(days_dict)))
+    print("Sorting images into sequences...")
 
     # Okay now step through the items in the first day
     all_records = []
@@ -145,8 +145,8 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
         ok = True
 
         for i, image_path in enumerate(record[5]):
-            if image_path is None or (isinstance(image_path, (list,)) and None in image_path):
-                print "No image at a timepoint {0} for record (ID {1})".format(i, record[1])
+            if image_path is None or (isinstance(image_path, list) and None in image_path):
+                print("No image at a timepoint {0} for record (ID {1})".format(i, record[1]))
                 ok = False
                 break
 
@@ -167,15 +167,15 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
 
     fold_writers = [tf.python_io.TFRecordWriter('{0}_{1}'.format(output_path, i)) for i in range(num_folds)]
 
-    print "Number of records: {0}".format(num_samples)
-    print "Total removed due to missing images/genotypes: {0}".format(len(all_records)-num_samples)
+    print("Number of records: {0}".format(num_samples))
+    print("Total removed due to missing images/genotypes: {0}".format(len(all_records)-num_samples))
 
     # Write tfrecords
-    print "Writing tfrecord files in {0}...".format(output_path)
-    print "Please be patient, this could take a while..."
+    print("Writing tfrecord files in {0}...".format(output_path))
+    print("Please be patient, this could take a while...")
 
     _int_feature = lambda v: tf.train.Int64List(value=v)
-    _byte_feature = lambda v: tf.train.BytesList(value=v)
+    _byte_feature = lambda v: tf.train.BytesList(value=[v])
 
     for i, label in tqdm(enumerate(clean_records)):
         IID = int(label[1])
@@ -189,7 +189,7 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
 
         # add all images to the feature list
         for j, image_path in enumerate(all_record_images):
-            if isinstance(image_path, (list,)):
+            if isinstance(image_path, list):
                 all_channels = []
 
                 for current_channel in image_path:
@@ -207,7 +207,7 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
         serialized_example = example.SerializeToString()
 
         # Figure out which fold file this RIL goes in
-        for key, value in fold_IIDs.iteritems():
+        for key, value in fold_IIDs.items():
             if IID in value:
                 writer = fold_writers[key]
                 writer.write(serialized_example)
@@ -225,7 +225,7 @@ def bgwas2tfrecords(index_file, images_directory, output_dir, tfrecord_filename,
     for writer in fold_writers:
         writer.close()
 
-    print "Done"
+    print("Done")
 
 
 def read_tfrecords_dataset(filename, image_height, image_width, image_depth, num_timepoints, num_threads, cached=True, in_memory=False, mod=1):
@@ -237,7 +237,7 @@ def read_tfrecords_dataset(filename, image_height, image_width, image_depth, num
         }
 
         for i in range(0, num_timepoints, mod):
-            features_dict['image_data_{0}'.format(i/mod)] = tf.VarLenFeature(tf.string)
+            features_dict['image_data_{0}'.format(int(i/mod))] = tf.VarLenFeature(tf.string)
 
         outputs = tf.parse_single_example(example, features=features_dict)
 
@@ -247,7 +247,7 @@ def read_tfrecords_dataset(filename, image_height, image_width, image_depth, num
 
         ret = {'id': id, 'treatment': treatment, 'genotype': genotype}
 
-        for i in range(num_timepoints / mod):
+        for i in range(int(num_timepoints / mod)):
             image_name = 'image_data_{0}'.format(i)
             image = tf.decode_raw(tf.sparse_tensor_to_dense(outputs[image_name], default_value=''), tf.uint8)
             image = tf.reshape(image, [image_height, image_width, image_depth])
@@ -345,12 +345,12 @@ def csv2ped(input_filename, output_file):
         # extract RIL name
         RIL_id = row.id[-3:]
         row.pop('id')
-        print('Parsing individual %s...' % RIL_id)
+        print(('Parsing individual %s...' % RIL_id))
 
         # Convert variants from CSV into SNPs
         SNPs = row.as_matrix()
 
-        for key, value in variant_key.iteritems():
+        for key, value in variant_key.items():
             SNPs = [entry.replace(key, value) for entry in SNPs]
 
         # Create a copy with two copies of each SNP
@@ -375,7 +375,7 @@ def csv2ped(input_filename, output_file):
     print('Writing map file...')
 
     # Write output MAP file
-    markers = df.keys().values[1:]
+    markers = list(df.keys()).values[1:]
 
     for marker, chromosome, distance in zip(markers, chromes, distances):
         row = pd.DataFrame([chromosome[0], marker, 0, float(distance[0])*cM_ratio])
@@ -415,7 +415,7 @@ def snapshot2bgwas(input_filename, output_filename, barcode_regex='^([A-Za-z]+)+
             cleaned = [image + '.png' for image in all_images if image and image.startswith(prefix)]
 
             if len(cleaned) > 0:
-                if barcode in bc_dict.keys():
+                if barcode in list(bc_dict.keys()):
                     bc_dict[barcode].append(cleaned)
                 else:
                     bc_dict[barcode] = [cleaned]
@@ -423,18 +423,18 @@ def snapshot2bgwas(input_filename, output_filename, barcode_regex='^([A-Za-z]+)+
             for image in all_images:
                 if image and image.startswith(prefix):
                     image = image + '.png'
-                    print('Processing entry for image %s...' % image)
+                    print(('Processing entry for image %s...' % image))
 
-                    if barcode in bc_dict.keys():
+                    if barcode in list(bc_dict.keys()):
                         bc_dict[barcode].append(image)
                     else:
                         bc_dict[barcode] = [image]
 
     min_image_count = min([len(images) for (_, images) in list(bc_dict.items())])
 
-    print('Truncating all image sequences to {0} timepoints.'.format(min_image_count))
+    print(('Truncating all image sequences to {0} timepoints.'.format(min_image_count)))
 
-    for (barcode, images) in bc_dict.iteritems():
+    for (barcode, images) in bc_dict.items():
         # Decode barcode
         matches = re.findall(barcode_regex, barcode)
 

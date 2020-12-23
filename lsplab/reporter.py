@@ -15,7 +15,7 @@ class reporter(object):
     def print_all(self):
         for item in self.__steps:
             status_mark = self.__success_emoji if item[1] else self.__failure_emoji
-            print emoji.emojize("{0} {1}".format(status_mark, item[0]))
+            print(emoji.emojize("{0} {1}".format(status_mark, item[0])))
 
     def all_succeeded(self):
         return all([item[1] for item in self.__steps])

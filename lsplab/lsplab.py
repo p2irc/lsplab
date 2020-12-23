@@ -115,7 +115,7 @@ class lsp(object):
 
     def __log(self, message):
         if self.__debug:
-            print('{0}: {1}'.format(datetime.datetime.now().strftime("%I:%M%p"), message.encode('utf-8')))
+            print(('{0}: {1}'.format(datetime.datetime.now().strftime("%I:%M%p"), message.encode('utf-8'))))
 
     def __initialize(self):
         self.__log('Initializing variables...')
@@ -820,7 +820,7 @@ class lsp(object):
 
         if self.__mode == 'longitudinal':
             num_rows = len(self.__all_projections[0])
-            all_idxs = range(num_rows)
+            all_idxs = list(range(num_rows))
 
             t = trange(0, num_rows, self.__num_gpus)
 
@@ -856,7 +856,7 @@ class lsp(object):
                 ret.extend(r)
         elif self.__mode == 'cross sectional':
             def get_projections_with_treatment(tr):
-                return [filter(lambda x: x[1] == tr, p) for p in self.__all_projections]
+                return [[x for x in p if x[1] == tr] for p in self.__all_projections]
 
             def get_idx_for_accid(accid, projections):
                 for p in range(len(projections[0])):
@@ -869,10 +869,10 @@ class lsp(object):
             untreated_projections = get_projections_with_treatment(0)
 
             # Remove all treated with no corresponding untreated
-            treated_projections = [filter(lambda x: get_idx_for_accid(x[0], untreated_projections) is not None, p) for p in treated_projections]
+            treated_projections = [[x for x in p if get_idx_for_accid(x[0], untreated_projections) is not None] for p in treated_projections]
 
             num_rows = len(treated_projections[0])
-            all_idxs = range(num_rows)
+            all_idxs = list(range(num_rows))
 
             t = trange(0, num_rows, self.__num_gpus)
 
@@ -922,7 +922,7 @@ class lsp(object):
 
         self.__report_rate = report_rate
         self.__num_gpus = num_gpus
-        self.__batch_size = self.__batch_size / num_gpus
+        self.__batch_size = int(self.__batch_size / num_gpus)
         self.__num_threads = num_threads
 
         if self.__downsample_mod > 1:
@@ -943,7 +943,7 @@ class lsp(object):
         self.__log('Training samples: {0}'.format(self.__num_train_samples))
         self.__log('Testing samples: {0}'.format(self.__num_test_samples))
 
-        self.__pretraining_batches = (self.__num_train_samples * pretraining_epochs) / (self.__batch_size * num_gpus)
+        self.__pretraining_batches = int((self.__num_train_samples * pretraining_epochs) / (self.__batch_size * num_gpus))
 
         self.__log('Training to {0} batches'.format(self.__pretraining_batches))
 

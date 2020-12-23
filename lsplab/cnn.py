@@ -46,7 +46,7 @@ class cnn(object):
 
     def __log(self, message):
         if self.__debug:
-            print('{0}: CNN - {1}'.format(datetime.datetime.now().strftime("%I:%M%p"), message))
+            print(('{0}: CNN - {1}'.format(datetime.datetime.now().strftime("%I:%M%p"), message)))
 
     def __last_layer(self):
         return self.layers[-1]
